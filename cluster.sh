@@ -6,6 +6,123 @@ DB_PATH="/root/master_core.db"
 MASTER_IP=$(curl -s4 ifconfig.me) # IP самого Мастера для белых списков файрвола
 
 # ==========================================
+# ФУНКЦИЯ 0: Установка Master-узла (Control Plane)
+# ==========================================
+install_master() {
+    clear
+    echo "👑 УСТАНОВКА ЯДРА УПРАВЛЕНИЯ (MASTER-NODE)"
+    echo "Внимание: Этот сервер не будет пропускать VPN-трафик."
+    echo "Он управляет БД, ботом и выдает подписки."
+    echo "------------------------------------------------"
+    
+    read -p "🌐 Введи домен для сервера подписок (напр. sub.domain.com): " SUB_DOMAIN
+    read -p "✉️ Email для SSL (Let's Encrypt): " SSL_EMAIL
+    read -p "🤖 Введи Токен Telegram-бота: " TG_TOKEN
+    read -p "🆔 Введи твой Chat ID (Telegram): " TG_CHAT_ID
+
+    echo "⏳ 1/6 Установка зависимостей..."
+    apt-get update >/dev/null 2>&1
+    apt-get install -yq nginx certbot python3-certbot-nginx sqlite3 curl ufw git >/dev/null 2>&1
+
+    echo "⏳ 2/6 Настройка Telegram конфига..."
+    echo "TG_TOKEN=\"$TG_TOKEN\"" > /root/.vpn_tg.conf
+    echo "TG_CHAT_ID=\"$TG_CHAT_ID\"" >> /root/.vpn_tg.conf
+    chmod 600 /root/.vpn_tg.conf
+
+    echo "⏳ 3/6 Получение SSL-сертификата..."
+    systemctl stop nginx
+    certbot certonly --standalone -d "$SUB_DOMAIN" -m "$SSL_EMAIL" --agree-tos -n
+    
+    if[ ! -f "/etc/letsencrypt/live/$SUB_DOMAIN/fullchain.pem" ]; then
+        echo "❌ Ошибка SSL! Проверь, что домен привязан к IP этого сервера."
+        return 1
+    fi
+
+    echo "⏳ 4/6 Настройка Nginx (Reverse Proxy)..."
+    cat <<EOF > /etc/nginx/sites-available/default
+server {
+    listen 80;
+    server_name $SUB_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name $SUB_DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$SUB_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$SUB_DOMAIN/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Защита от сканеров (отдаем 404 на корень)
+    location / {
+        return 404;
+    }
+
+    # Проксирование запросов подписок на Go-бэкенд
+    location /sub/ {
+        proxy_pass http://127.0.0.1:8080/sub/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        
+        # Отключаем кеширование подписок
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
+    }
+}
+EOF
+    systemctl restart nginx
+
+    echo "⏳ 5/6 Настройка окружения Go и компиляция ядра..."
+    cd /tmp
+    wget -q https://go.dev/dl/go1.21.6.linux-amd64.tar.gz
+    rm -rf /usr/local/go && tar -C /usr/local -xzf go1.21.6.linux-amd64.tar.gz
+    export PATH=$PATH:/usr/local/go/bin
+    
+    # Функция из твоего скрипта
+    comp_main 
+
+    # Убираем за собой Go, чтобы не занимать место
+    rm -rf /usr/local/go /tmp/go1.21.6.linux-amd64.tar.gz
+
+    echo "⏳ 6/6 Настройка Systemd для Master-Core..."
+    cat <<EOF > /etc/systemd/system/master-core.service
+[Unit]
+Description=VPN Cluster Master Core (Go Backend)
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/master-core
+Restart=always
+RestartSec=5
+User=root
+WorkingDirectory=/root
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable master-core
+    systemctl restart master-core
+
+    # Файрвол: открываем только веб и SSH. gRPC порты (10085) здесь не нужны, они на мостах.
+    ufw allow 22/tcp
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw --force enable >/dev/null 2>&1
+
+    clear
+    echo "🎉 MASTER-УЗЕЛ УСПЕШНО УСТАНОВЛЕН!"
+    echo "🌍 Ссылка для подписок настроена на: https://$SUB_DOMAIN/sub/"
+    echo "🤖 Telegram бот запущен и ждет команд."
+    echo ""
+    echo "Следующий шаг: В главном меню добавь EU-Ноду, а затем RU-Мост."
+    read -p "Нажми Enter для возврата в меню..."
+}
+
+# ==========================================
 # ФУНКЦИЯ 1: Развертывание EU-Ноды (Точка выхода)
 # ==========================================
 deploy_eu_node() {
