@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# 🚀 VPN CLOUD NATIVE v11.0 (Master API + Agents + Dynamic SNI/WARP + Alerts)
+# 🚀 VPN CLOUD NATIVE v12.0 (Ansible-way: SSH Push Setup + Agent Pull Runtime)
 # ==============================================================================
 
 export DEBIAN_FRONTEND=noninteractive
@@ -10,7 +10,7 @@ install_deps() {
     if ! command -v go &> /dev/null; then
         echo "⏳ Установка зависимостей..."
         apt-get update -q >/dev/null 2>&1
-        apt-get install -yq jq sqlite3 curl openssl git build-essential nginx certbot python3-certbot-nginx ufw uuid-runtime fail2ban tar >/dev/null 2>&1
+        apt-get install -yq jq sqlite3 curl openssl git build-essential nginx certbot python3-certbot-nginx ufw uuid-runtime fail2ban tar sshpass >/dev/null 2>&1
         
         wget -q https://go.dev/dl/go1.22.1.linux-amd64.tar.gz
         rm -rf /usr/local/go && tar -C /usr/local -xzf go1.22.1.linux-amd64.tar.gz
@@ -20,7 +20,7 @@ install_deps() {
 }
 
 # ==============================================================================
-# 1. МАСТЕР (API + NGINX + BOT)
+# 1. УСТАНОВКА МАСТЕРА
 # ==============================================================================
 install_master() {
     install_deps
@@ -34,6 +34,12 @@ install_master() {
     CLUSTER_TOKEN=$(openssl rand -hex 16)
     BRIDGE_UUID=$(uuidgen)
     
+    # Генерация SSH ключа кластера (без пароля)
+    if[ ! -f /root/.ssh/vpn_cluster_key ]; then
+        echo "🔑 Генерация SSH-ключей кластера..."
+        ssh-keygen -t ed25519 -f /root/.ssh/vpn_cluster_key -N "" -q
+    fi
+    
     mkdir -p /etc/orchestrator
     cat <<EOF > /etc/orchestrator/config.env
 TG_TOKEN="$TG_TOKEN"
@@ -44,7 +50,7 @@ BRIDGE_UUID="$BRIDGE_UUID"
 MASTER_IP="$MASTER_IP"
 EOF
 
-    # NGINX (Проксирует API)
+    # NGINX
     systemctl stop nginx 2>/dev/null
     certbot certonly --standalone -d "$SUB_DOMAIN" -m "$SSL_EMAIL" --agree-tos -n
     
@@ -57,7 +63,6 @@ server {
     
     location /sub/ { proxy_pass http://127.0.0.1:8080/sub/; proxy_set_header X-Real-IP \$remote_addr; }
     location /api/ { proxy_pass http://127.0.0.1:8080/api/; proxy_set_header X-Real-IP \$remote_addr; }
-    location /install/ { proxy_pass http://127.0.0.1:8080/install/; proxy_set_header X-Real-IP \$remote_addr; }
     location /download/ { proxy_pass http://127.0.0.1:8080/download/; }
     location / { return 404; }
 }
@@ -97,8 +102,6 @@ func initDB() {
 	db.Exec(`CREATE TABLE IF NOT EXISTS bridges (ip TEXT PRIMARY KEY, domain TEXT, pub_key TEXT, sid TEXT, last_seen DATETIME)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS exits (ip TEXT PRIMARY KEY, pub_key TEXT, ss_pass TEXT, xhttp_path TEXT)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, val TEXT)`)
-	
-	// Default Settings
 	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('sni', 'www.microsoft.com')`)
 	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('warp_domains', '"geosite:google","geosite:openai","geosite:netflix","geosite:instagram"')`)
 }
@@ -135,17 +138,11 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 	uRows, _ := db.Query("SELECT uuid, name FROM users")
 	for uRows.Next() { var u, n string; uRows.Scan(&u, &n); users = append(users, map[string]string{"uuid": u, "email": n}) }
 	
-	exits := []map[string]string{}
+	exits :=[]map[string]string{}
 	eRows, _ := db.Query("SELECT ip, pub_key, ss_pass, xhttp_path FROM exits")
 	for eRows.Next() { var ip, pk, ss, xp string; eRows.Scan(&ip, &pk, &ss, &xp); exits = append(exits, map[string]string{"ip": ip, "pub_key": pk, "ss_pass": ss, "xhttp_path": xp}) }
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"bridge_uuid": cfg.BridgeUUID, 
-		"sni": sni, 
-		"warp_domains": warp, 
-		"users": users, 
-		"exits": exits,
-	})
+	json.NewEncoder(w).Encode(map[string]interface{}{"bridge_uuid": cfg.BridgeUUID, "sni": sni, "warp_domains": warp, "users": users, "exits": exits})
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
@@ -153,16 +150,6 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&stats)
 	for _, s := range stats {
 		db.Exec("UPDATE users SET traffic_up=traffic_up+?, traffic_down=traffic_down+? WHERE name=?", int64(s["up"].(float64)), int64(s["down"].(float64)), s["email"].(string))
-	}
-	w.WriteHeader(200)
-}
-
-func handleRegister(w http.ResponseWriter, r *http.Request) {
-	typ, ip, pk := r.URL.Query().Get("type"), r.URL.Query().Get("ip"), r.URL.Query().Get("pk")
-	if typ == "eu" {
-		db.Exec("INSERT OR REPLACE INTO exits (ip, pub_key, ss_pass, xhttp_path) VALUES (?, ?, ?, ?)", ip, pk, r.URL.Query().Get("ss"), r.URL.Query().Get("xp"))
-	} else if typ == "ru" {
-		db.Exec("INSERT OR REPLACE INTO bridges (ip, domain, pub_key, sid, last_seen) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)", ip, r.URL.Query().Get("domain"), pk, r.URL.Query().Get("sid"))
 	}
 	w.WriteHeader(200)
 }
@@ -175,8 +162,7 @@ func handleSub(w http.ResponseWriter, r *http.Request) {
 	var name string
 	if db.QueryRow("SELECT name FROM users WHERE uuid=?", uuid).Scan(&name) != nil { http.Error(w, "Not found", 404); return }
 
-	var sni string
-	db.QueryRow("SELECT val FROM settings WHERE key='sni'").Scan(&sni)
+	var sni string; db.QueryRow("SELECT val FROM settings WHERE key='sni'").Scan(&sni)
 
 	var links[]string
 	bRows, _ := db.Query("SELECT domain, pub_key, sid FROM bridges")
@@ -197,61 +183,11 @@ func handleSub(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleInstallScripts(w http.ResponseWriter, r *http.Request) {
-	typ := strings.TrimPrefix(r.URL.Path, "/install/")
-	apiURL := "https://" + cfg.Domain
-	
-	if typ == "bridge" {
-		fmt.Fprintf(w, `#!/bin/bash
-DOMAIN=$1; if [ -z "$DOMAIN" ]; then echo "Укажи домен моста!"; exit 1; fi
-apt update && apt install -y curl uuid-runtime jq
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-KEYS=$(xray x25519); PK=$(echo "$KEYS" | grep Private | awk '{print $3}'); PUB=$(echo "$KEYS" | grep Public | awk '{print $3}'); SID=$(openssl rand -hex 4)
-echo "$PK|$SID" > /usr/local/etc/xray/agent_keys.txt
-IP=$(curl -s4 ifconfig.me)
-curl -H "Authorization: Bearer %s" "%s/api/register?type=ru&ip=$IP&domain=$DOMAIN&pk=$PUB&sid=$SID"
-wget -q %s/download/agent -O /usr/local/bin/vpn-agent && chmod +x /usr/local/bin/vpn-agent
-cat <<EOF > /etc/systemd/system/vpn-agent.service
-[Unit]
-Description=VPN Agent
-[Service]
-ExecStart=/usr/local/bin/vpn-agent -master %s -token %s
-Restart=always
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload && systemctl enable vpn-agent && systemctl restart vpn-agent
-echo "✅ Мост установлен!"
-`, cfg.ClusterToken, apiURL, apiURL, apiURL, cfg.ClusterToken)
-
-	} else if typ == "eu" {
-		fmt.Fprintf(w, `#!/bin/bash
-apt update && apt install -y curl gpg lsb-release jq openssl
-curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-echo "deb[arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list
-apt update && apt install -y cloudflare-warp
-warp-cli --accept-tos registration new; warp-cli --accept-tos mode proxy; warp-cli --accept-tos proxy port 40000; warp-cli --accept-tos connect
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-KEYS=$(xray x25519); PK=$(echo "$KEYS" | grep Private | awk '{print $3}'); PUB=$(echo "$KEYS" | grep Public | awk '{print $3}')
-SS_PASS=$(openssl rand -base64 16); XP=$(openssl rand -hex 6)
-IP=$(curl -s4 ifconfig.me)
-cat <<EOF > /usr/local/etc/xray/config.json
-{"log":{"loglevel":"warning"},"inbounds":[{"port":5000,"protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"$SS_PASS","network":"tcp,udp"}},{"port":443,"protocol":"vless","settings":{"clients":[{"id":"%s","flow":"xtls-rprx-vision"}],"decryption":"none"},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"dest":"www.microsoft.com:443","serverNames":["www.microsoft.com"],"privateKey":"$PK","shortIds":[""]}}},{"port":4433,"protocol":"vless","settings":{"clients":[{"id":"%s"}],"decryption":"none"},"streamSettings":{"network":"xhttp","security":"reality","xhttpSettings":{"path":"/$XP","mode":"auto"},"realitySettings":{"dest":"www.microsoft.com:443","serverNames":["www.microsoft.com"],"privateKey":"$PK","shortIds":[""]}}}],"outbounds":[{"protocol":"freedom","tag":"direct"},{"protocol":"socks","tag":"warp","settings":{"servers":[{"address":"127.0.0.1","port":40000}]}},{"protocol":"blackhole","tag":"block"}],"routing":{"domainStrategy":"IPIfNonMatch","rules":[{"type":"field","domain":["geosite:google","geosite:openai","geosite:netflix"],"outboundTag":"warp"},{"type":"field","ip":["geoip:private"],"outboundTag":"block"}]}}
-EOF
-systemctl restart xray
-curl -H "Authorization: Bearer %s" "%s/api/register?type=eu&ip=$IP&pk=$PUB&ss=$SS_PASS&xp=$XP"
-echo "✅ EU Нода (WARP+xHTTP+SS) установлена!"
-`, cfg.BridgeUUID, cfg.BridgeUUID, cfg.ClusterToken, apiURL)
-	}
-}
-
 func main() {
 	loadConfig(); initDB()
 	http.HandleFunc("/api/sync", authMw(handleSync))
 	http.HandleFunc("/api/stats", authMw(handleStats))
-	http.HandleFunc("/api/register", authMw(handleRegister))
 	http.HandleFunc("/sub/", handleSub)
-	http.HandleFunc("/install/", handleInstallScripts)
 	http.Handle("/download/", http.StripPrefix("/download/", http.FileServer(http.Dir("/etc/orchestrator/bin"))))
 	go http.ListenAndServe("127.0.0.1:8080", nil)
 
@@ -272,9 +208,8 @@ func main() {
 			
 			if fmt.Sprintf("%d", chatID) == cfg.ChatID {
 				msg := tgbotapi.NewMessage(chatID, "")
-				
 				if txt == "/start" || txt == "/menu" {
-					msg.Text = "🧠 Master API v11.0 Ultimate"
+					msg.Text = "🧠 Master API v12.0"
 					msg.ReplyMarkup = mainKeyboard
 				} else if txt == "🎫 Создать инвайт" || txt == "/invite" {
 					b := make([]byte, 4); rand.Read(b); code := "INV-" + strings.ToUpper(hex.EncodeToString(b))
@@ -283,12 +218,11 @@ func main() {
 					msg.ParseMode = "HTML"
 				} else if txt == "👥 Юзеры и Трафик" || txt == "/users" {
 					rows, _ := db.Query("SELECT name, traffic_up, traffic_down FROM users")
-					res := "📊 *Статистика пользователей:*\n\n"
+					res := "📊 *Статистика:*\n\n"
 					for rows.Next() { 
 						var n string; var u, d int64; rows.Scan(&n, &u, &d)
 						res += fmt.Sprintf("👤 *%s*\n 🔽 %.2f GB | 🔼 %.2f GB\n\n", n, float64(d)/1073741824, float64(u)/1073741824) 
 					}
-					if res == "📊 *Статистика пользователей:*\n\n" { res = "Пока нет активных пользователей." }
 					msg.Text = res
 					msg.ParseMode = "Markdown"
 				} else if txt == "📊 Статус кластера" {
@@ -299,27 +233,25 @@ func main() {
 					db.QueryRow("SELECT val FROM settings WHERE key='sni'").Scan(&sni)
 					db.QueryRow("SELECT val FROM settings WHERE key='warp_domains'").Scan(&warp)
 					
-					msg.Text = fmt.Sprintf("🌐 *Состояние инфраструктуры:*\n\n🇷🇺 Активных RU-мостов: *%d*\n🇪🇺 Подключено EU-нод: *%d*\n\n🎭 Текущий SNI: `%s`\n🚀 WARP Домены: `%s`", bC, eC, sni, warp)
+					msg.Text = fmt.Sprintf("🌐 *Инфраструктура:*\n\n🇷🇺 Активных мостов: *%d*\n🇪🇺 EU-нод: *%d*\n\n🎭 SNI: `%s`\n🚀 WARP: `%s`", bC, eC, sni, warp)
 					msg.ParseMode = "Markdown"
 				} else if txt == "⚙️ Настройки" {
-					msg.Text = "Доступные команды настройки (отправь сообщением):\n\n`/sni www.apple.com` - Сменить сайт маскировки\n`/warp geosite:google,domain:chatgpt.com` - Указать домены для WARP"
+					msg.Text = "Доступные команды:\n`/sni www.apple.com` - Сменить маскировку\n`/warp geosite:google,domain:chatgpt.com` - Домены WARP"
 					msg.ParseMode = "Markdown"
 				} else if strings.HasPrefix(txt, "/sni ") {
 					newSNI := strings.TrimPrefix(txt, "/sni ")
 					db.Exec("UPDATE settings SET val=? WHERE key='sni'", newSNI)
-					msg.Text = "✅ SNI изменен на " + newSNI + ". Агенты применят его в течение 30 секунд (без разрыва связи)."
+					msg.Text = "✅ SNI изменен."
 				} else if strings.HasPrefix(txt, "/warp ") {
 					nW := strings.TrimPrefix(txt, "/warp ")
 					parts := strings.Split(nW, ",")
 					for i, p := range parts { parts[i] = fmt.Sprintf(`"%s"`, strings.TrimSpace(p)) }
-					finalWarp := strings.Join(parts, ",")
-					db.Exec("UPDATE settings SET val=? WHERE key='warp_domains'", finalWarp)
-					msg.Text = "✅ Маршруты WARP изменены. Агенты применят их в течение 30 секунд."
+					db.Exec("UPDATE settings SET val=? WHERE key='warp_domains'", strings.Join(parts, ","))
+					msg.Text = "✅ WARP изменен."
 				}
 				if msg.Text != "" { bot.Send(msg) }
 			}
 			
-			// Логика активации инвайта
 			if strings.HasPrefix(txt, "/start INV-") {
 				code := strings.TrimPrefix(txt, "/start ")
 				var ex int
@@ -329,9 +261,7 @@ func main() {
 					name := update.Message.From.UserName; if name == "" { name = fmt.Sprintf("user_%d", update.Message.From.ID) }
 					db.Exec("INSERT INTO users (uuid, name) VALUES (?, ?)", uuid, name)
 					db.Exec("DELETE FROM invites WHERE code=?", code)
-					bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Профиль успешно создан!\n\n👇 Нажми на ссылку для настройки VPN:\nhttps://%s/sub/%s.html", cfg.Domain, uuid)))
-				} else {
-					bot.Send(tgbotapi.NewMessage(chatID, "❌ Инвайт недействителен или уже использован."))
+					bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Профиль создан!\n\n👇 Ссылка для VPN:\nhttps://%s/sub/%s.html", cfg.Domain, uuid)))
 				}
 			}
 		}
@@ -374,7 +304,7 @@ type State struct {
 	BridgeUUID  string              `json:"bridge_uuid"`
 	SNI         string              `json:"sni"`
 	WarpDomains string              `json:"warp_domains"`
-	Users       []map[string]string `json:"users"`
+	Users[]map[string]string `json:"users"`
 	Exits       []map[string]string `json:"exits"`
 }
 
@@ -388,7 +318,6 @@ func syncWithMaster() {
 	var state State
 	json.NewDecoder(resp.Body).Decode(&state)
 
-	// Хэш зависит от Нод, SNI и WARP доменов
 	eJSON, _ := json.Marshal(state.Exits)
 	cHash := fmt.Sprintf("%x", sha256.Sum256([]byte(string(eJSON)+state.SNI+state.WarpDomains)))
 	
@@ -435,7 +364,6 @@ func buildAndRestartXray(state State) {
 	oStr := "[]"; if len(outbounds)>0 { oStr = "["+strings.Join(outbounds, ",")+"]" }
 	sStr := "\"block\""; if len(balancers)>0 { sStr = strings.Join(balancers, ",") }
 
-	// Добавлен Observatory + leastPing + warp rules dynamic
 	cfg := fmt.Sprintf(`{"log":{"loglevel":"warning"},"api":{"tag":"api","services":["HandlerService","StatsService"]},"stats":{},"policy":{"levels":{"0":{"statsUserUplink":true,"statsUserDownlink":true}}},"inbounds":[{"tag":"api-in","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}},{"tag":"client-in","port":443,"protocol":"vless","settings":{"clients":%s,"decryption":"none","fallbacks":[{"dest":80}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"%s:443","serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]}}},{"tag":"client-xh","port":8001,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":%s,"decryption":"none"},"streamSettings":{"network":"xhttp","security":"none","xhttpSettings":{"path":"/xtcp","mode":"auto"}}}],"outbounds":[%s,{"tag":"direct","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],"observatory":{"subjectSelector":[%s],"probeUrl":"https://www.google.com/generate_204","probeInterval":"1m","enableConcurrency":true},"routing":{"domainStrategy":"IPIfNonMatch","balancers":[{"tag":"eu-balancer","selector":[%s],"strategy":{"type":"leastPing"}}],"rules":[{"type":"field","inboundTag":["api-in"],"outboundTag":"api"},{"type":"field","inboundTag":["client-in","client-xh"],"balancerTag":"eu-balancer"},{"type":"field","ip":["geoip:private"],"outboundTag":"direct"}]}}`, clientsJSON, state.SNI, state.SNI, pk, sid, clientsJSON, strings.Trim(oStr, "[]"), sStr, sStr)
 
 	ioutil.WriteFile("/usr/local/etc/xray/config.json",[]byte(cfg), 0644)
@@ -470,7 +398,6 @@ func sendStats() {
 			if t == "downlink" { aggr[e]["down"] += v } else { aggr[e]["up"] += v }
 		}
 	}
-	
 	var pl []map[string]interface{}
 	for e, d := range aggr { pl = append(pl, map[string]interface{}{"email": e, "up": d["up"], "down": d["down"]}) }
 	if len(pl) > 0 {
@@ -497,8 +424,7 @@ AGENT_EOF
     mkdir -p /etc/orchestrator/bin
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /etc/orchestrator/bin/agent agent.go
 
-    cat <<EOF > /etc/systemd/system/vpn-master.service
-[Unit]
+    cat <<EOF > /etc/systemd/system/vpn-master.service[Unit]
 Description=VPN Master API
 [Service]
 ExecStart=/usr/local/bin/vpn-master
@@ -508,43 +434,164 @@ WorkingDirectory=/etc/orchestrator
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload && systemctl enable vpn-master && systemctl restart vpn-master
+    
     echo "✅ Мастер установлен!"
 }
 
 # ==============================================================================
-# UTILS (SSH Alerts, Hardening, Local Bridge)
+# 2. РАЗВЕРТЫВАНИЕ УЗЛОВ (PUSH VIA SSH KEY)
 # ==============================================================================
-install_local_bridge() {
-    DOMAIN=$(grep "SUB_DOMAIN" /etc/orchestrator/config.env | cut -d'"' -f2)
-    curl -sL https://$DOMAIN/install/bridge | bash -s -- $DOMAIN
+deploy_node() {
+    TYPE=$1
+    if [ "$TYPE" == "ru" ]; then
+        echo -e "\n🌉 ДОБАВЛЕНИЕ RU-МОСТА (Ingress)"
+        echo "💡 Введи 127.0.0.1 для установки моста на этот же сервер."
+        read -p "IP адрес сервера: " IP
+        read -p "Домен для моста (bridge.vpn.com): " DOMAIN
+    else
+        echo -e "\n🇪🇺 ДОБАВЛЕНИЕ EU-НОДЫ (Egress + WARP)"
+        read -p "IP адрес сервера: " IP
+    fi
+
+    # Локальная установка
+    if[ "$IP" == "127.0.0.1" ]; then
+        CMD_PREFIX="bash -s"
+    else
+        read -s -p "Root пароль от $IP: " PASS; echo ""
+        echo "⏳ Копирование SSH-ключа на удаленный сервер..."
+        sshpass -p "$PASS" ssh-copy-id -i /root/.ssh/vpn_cluster_key.pub -o StrictHostKeyChecking=no root@$IP >/dev/null 2>&1
+        CMD_PREFIX="ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP bash -s"
+    fi
+
+    M_IP=$(curl -s4 ifconfig.me)
+    C_TOK=$(grep CLUSTER_TOKEN /etc/orchestrator/config.env | cut -d'"' -f2)
+    B_UUID=$(grep BRIDGE_UUID /etc/orchestrator/config.env | cut -d'"' -f2)
+    M_DOM=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
+
+    echo "⏳ Запуск автоматической настройки сервера..."
+    
+    RAW_OUT=$($CMD_PREFIX "$M_IP" "$C_TOK" "$B_UUID" "$M_DOM" "$TYPE" "$DOMAIN" << 'EOF'
+        MASTER_IP=$1; TOKEN=$2; BRIDGE_UUID=$3; MASTER_DOM=$4; TYPE=$5; DOMAIN=$6
+        
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -q >/dev/null 2>&1
+        apt-get install -yq curl jq openssl ufw >/dev/null 2>&1
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
+        
+        KEYS=$(xray x25519)
+        PK=$(echo "$KEYS" | grep Private | awk '{print $3}')
+        PUB=$(echo "$KEYS" | grep Public | awk '{print $3}')
+        
+        if [ "$TYPE" == "ru" ]; then
+            SID=$(openssl rand -hex 4)
+            echo "$PK|$SID" > /usr/local/etc/xray/agent_keys.txt
+            
+            # Установка агента
+            wget -q https://$MASTER_DOM/download/agent -O /usr/local/bin/vpn-agent
+            chmod +x /usr/local/bin/vpn-agent
+            cat <<SVC > /etc/systemd/system/vpn-agent.service
+[Unit]
+Description=VPN Agent
+[Service]
+ExecStart=/usr/local/bin/vpn-agent -master https://$MASTER_DOM -token $TOKEN
+Restart=always
+[Install]
+WantedBy=multi-user.target
+SVC
+            systemctl daemon-reload && systemctl enable vpn-agent && systemctl restart vpn-agent
+            ufw allow 443/tcp >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1
+            
+            # Отдаем Мастеру данные для записи в БД
+            echo "NODE_DATA|ru|$PUB|$SID"
+            
+        elif [ "$TYPE" == "eu" ]; then
+            # Установка WARP
+            apt-get install -yq gpg lsb-release >/dev/null 2>&1
+            curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+            echo "deb[arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
+            apt-get update -q >/dev/null 2>&1
+            apt-get install -yq cloudflare-warp >/dev/null 2>&1
+            warp-cli --accept-tos registration new >/dev/null 2>&1
+            warp-cli --accept-tos mode proxy >/dev/null 2>&1
+            warp-cli --accept-tos proxy port 40000 >/dev/null 2>&1
+            warp-cli --accept-tos connect >/dev/null 2>&1
+            
+            SS_PASS=$(openssl rand -base64 16)
+            XP=$(openssl rand -hex 6)
+            
+            cat <<XCFG > /usr/local/etc/xray/config.json
+{"log":{"loglevel":"warning"},"inbounds":[{"port":5000,"protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"$SS_PASS","network":"tcp,udp"}},{"port":443,"protocol":"vless","settings":{"clients":[{"id":"$BRIDGE_UUID","flow":"xtls-rprx-vision"}],"decryption":"none"},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"dest":"www.microsoft.com:443","serverNames":["www.microsoft.com"],"privateKey":"$PK","shortIds":[""]}}},{"port":4433,"protocol":"vless","settings":{"clients":[{"id":"$BRIDGE_UUID"}],"decryption":"none"},"streamSettings":{"network":"xhttp","security":"reality","xhttpSettings":{"path":"/$XP","mode":"auto"},"realitySettings":{"dest":"www.microsoft.com:443","serverNames":["www.microsoft.com"],"privateKey":"$PK","shortIds":[""]}}}],"outbounds":[{"protocol":"freedom","tag":"direct"},{"protocol":"socks","tag":"warp","settings":{"servers":[{"address":"127.0.0.1","port":40000}]}},{"protocol":"blackhole","tag":"block"}],"routing":{"domainStrategy":"IPIfNonMatch","rules":[{"type":"field","domain":["geosite:google","geosite:openai","geosite:netflix"],"outboundTag":"warp"},{"type":"field","ip":["geoip:private"],"outboundTag":"block"}]}}
+XCFG
+            systemctl restart xray
+            ufw allow 443/tcp >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1
+            
+            echo "NODE_DATA|eu|$PUB|$SS_PASS|$XP"
+        fi
+        
+        # Hardening: Отключаем парольный вход (Только по ключам)
+        sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/g' /etc/ssh/sshd_config
+        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+EOF
+)
+
+    # Разбираем вывод от удаленного скрипта
+    DATA=$(echo "$RAW_OUT" | grep "NODE_DATA")
+    
+    if[ -z "$DATA" ]; then
+        echo "❌ Ошибка деплоя. Лог: $RAW_OUT"
+        return
+    fi
+
+    T=$(echo "$DATA" | cut -d'|' -f2)
+    PUB=$(echo "$DATA" | cut -d'|' -f3)
+
+    if[ "$T" == "ru" ]; then
+        SID=$(echo "$DATA" | cut -d'|' -f4)
+        sqlite3 /etc/orchestrator/core.db "INSERT OR REPLACE INTO bridges (ip, domain, pub_key, sid, last_seen) VALUES ('$IP', '$DOMAIN', '$PUB', '$SID', CURRENT_TIMESTAMP)"
+        echo "✅ RU-Мост успешно развернут и защищен SSH-ключом!"
+    elif [ "$T" == "eu" ]; then
+        SS=$(echo "$DATA" | cut -d'|' -f4)
+        XP=$(echo "$DATA" | cut -d'|' -f5)
+        sqlite3 /etc/orchestrator/core.db "INSERT OR REPLACE INTO exits (ip, pub_key, ss_pass, xhttp_path) VALUES ('$IP', '$PUB', '$SS', '$XP')"
+        echo "✅ EU-Нода успешно развернута и защищена SSH-ключом! Агенты подхватят её через 30 секунд."
+    fi
 }
 
-setup_ssh_alerts() {
+# ==============================================================================
+# 3. UTILITIES
+# ==============================================================================
+harden_system() {
+    echo "🛡️ УСИЛЕНИЕ БЕЗОПАСНОСТИ МАСТЕРА"
+    if free | awk '/^Swap:/ {exit !$2}'; then echo "✅ SWAP уже есть!"; else
+        fallocate -l 2G /swapfile; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
+        echo "/swapfile none swap sw 0 0" >> /etc/fstab; echo "✅ SWAP создан!"
+    fi
+    apt-get install -yq fail2ban >/dev/null 2>&1
+    echo -e "[sshd]\nenabled=true\nport=1:65535\nmaxretry=5\nbantime=24h" > /etc/fail2ban/jail.local
+    systemctl restart fail2ban; echo "✅ Fail2Ban включен."
+    
     TG_TOKEN=$(grep "TG_TOKEN" /etc/orchestrator/config.env | cut -d'"' -f2)
     TG_CHAT=$(grep "TG_CHAT_ID" /etc/orchestrator/config.env | cut -d'"' -f2)
-    if[ -z "$TG_TOKEN" ]; then echo "❌ Токен не найден в конфиге."; return; fi
-    
     cat <<EOF > /etc/profile.d/tg_ssh_notify.sh
 #!/bin/bash
-if [ -n "\$SSH_CLIENT" ]; then
+if[ -n "\$SSH_CLIENT" ]; then
     IP=\$(echo "\$SSH_CLIENT" | awk '{print \$1}')
     curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" -d chat_id="$TG_CHAT" -d text="🚨 Вход по SSH на \$(hostname) с IP \$IP" >/dev/null 2>&1 &
 fi
 EOF
     chmod +x /etc/profile.d/tg_ssh_notify.sh
-    echo "✅ Уведомления об SSH входах включены!"
+    echo "✅ SSH-алерты включены!"
 }
 
-toggle_autostart() {
-    BASHRC="$HOME/.bashrc"
-    SCRIPT_PATH=$(readlink -f "$0")
-    if grep -q "# VPN_AUTOSTART" "$BASHRC" 2>/dev/null; then
-        grep -v "# VPN_AUTOSTART" "$BASHRC" > "${BASHRC}.tmp" && mv "${BASHRC}.tmp" "$BASHRC"
-        echo "🔴 Автозапуск меню при входе отключен."
-    else
-        echo "[[ \$- == *i* ]] && bash \"$SCRIPT_PATH\" # VPN_AUTOSTART" >> "$BASHRC"
-        echo "🟢 Автозапуск меню включен."
-    fi
+create_backup() {
+    TG_TOKEN=$(grep "TG_TOKEN" /etc/orchestrator/config.env | cut -d'"' -f2)
+    TG_CHAT=$(grep "TG_CHAT_ID" /etc/orchestrator/config.env | cut -d'"' -f2)
+    
+    # Архивация БД, конфигов и SSH КЛЮЧЕЙ
+    tar -czf /tmp/backup.tar.gz /etc/orchestrator/core.db /etc/orchestrator/config.env /root/.ssh/vpn_cluster_key /root/.ssh/vpn_cluster_key.pub 2>/dev/null
+    curl -s -F chat_id="$TG_CHAT" -F document=@"/tmp/backup.tar.gz" -F caption="📦 Full Backup $(date +%F)" "https://api.telegram.org/bot$TG_TOKEN/sendDocument" >/dev/null
+    rm -f /tmp/backup.tar.gz
+    echo "✅ Полный бекап с SSH-ключами отправлен в Telegram!"
 }
 
 # ==============================================================================
@@ -552,29 +599,26 @@ toggle_autostart() {
 # ==============================================================================
 while true; do
     clear
-    API="https://$(grep SUB_DOMAIN /etc/orchestrator/config.env 2>/dev/null | cut -d'"' -f2)"
-    echo "🧠 CLOUD NATIVE ORCHESTRATOR v11.0"
-    echo "-----------------------------------"
-    if[ ! -f /usr/local/bin/vpn-master ]; then
+    echo "🧠 VPN CLOUD NATIVE v12.0 (Ansible-way)"
+    echo "---------------------------------------"
+    if [ ! -f /usr/local/bin/vpn-master ]; then
         echo "1. 🛠 Установить Master API"
     else
-        echo "2. 🏠 Установить Локальный RU-Мост"
-        echo "3. 🌉 Показать команду для Удаленного RU-Моста"
-        echo "4. 🇪🇺 Показать команду для EU-Ноды (+WARP)"
+        echo "2. 🌉 Добавить RU-Мост (Local / Remote SSH)"
+        echo "3. 🇪🇺 Добавить EU-Ноду (Remote SSH)"
     fi
-    echo "-----------------------------------"
-    echo "5. 🔔 Включить SSH-алерты в Telegram"
-    echo "6. ⚙️ Вкл/Выкл автозапуск этого меню"
+    echo "---------------------------------------"
+    echo "4. 🛡️ Усилить безопасность Мастера (SWAP, Alerts)"
+    echo "5. 📦 Сделать полный бекап в Telegram"
     echo "0. Выход"
-    echo "-----------------------------------"
+    echo "---------------------------------------"
     read -p "Выбор: " C
     case $C in
         1) install_master ; read -p "Enter..." ;;
-        2) install_local_bridge ; read -p "Enter..." ;;
-        3) echo -e "\n👉 Выполни на новом RU-сервере:\ncurl -sL $API/install/bridge | bash -s -- твой-домен.ru\n"; read -p "Enter..." ;;
-        4) echo -e "\n👉 Выполни на новом EU-сервере:\ncurl -sL $API/install/eu | bash\n"; read -p "Enter..." ;;
-        5) setup_ssh_alerts ; read -p "Enter..." ;;
-        6) toggle_autostart ; read -p "Enter..." ;;
+        2) deploy_node "ru" ; read -p "Enter..." ;;
+        3) deploy_node "eu" ; read -p "Enter..." ;;
+        4) harden_system ; read -p "Enter..." ;;
+        5) create_backup ; read -p "Enter..." ;;
         0) exit 0 ;;
     esac
 done
