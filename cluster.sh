@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# 🚀 VPN CLOUD NATIVE v9.0 Enterprise (Master API + Agents)
+# 🚀 VPN CLOUD NATIVE v10.0 Enterprise (Master API + Agents + Observatory)
 # ==============================================================================
 
 export DEBIAN_FRONTEND=noninteractive
@@ -44,7 +44,7 @@ BRIDGE_UUID="$BRIDGE_UUID"
 MASTER_IP="$MASTER_IP"
 EOF
 
-    # NGINX (Проксирует API и закрывает HTTP)
+    # NGINX
     systemctl stop nginx 2>/dev/null
     certbot certonly --standalone -d "$SUB_DOMAIN" -m "$SSL_EMAIL" --agree-tos -n
     
@@ -134,7 +134,7 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
-	var stats []map[string]interface{}
+	var stats[]map[string]interface{}
 	json.NewDecoder(r.Body).Decode(&stats)
 	for _, s := range stats {
 		db.Exec("UPDATE users SET traffic_up=traffic_up+?, traffic_down=traffic_down+? WHERE name=?", int64(s["up"].(float64)), int64(s["down"].(float64)), s["email"].(string))
@@ -239,26 +239,49 @@ func main() {
 		bot, _ := tgbotapi.NewBotAPI(cfg.Token)
 		u := tgbotapi.NewUpdate(0); u.Timeout = 60
 		updates := bot.GetUpdatesChan(u)
+		
+		mainKeyboard := tgbotapi.NewReplyKeyboard(
+			tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("📊 Статус кластера"), tgbotapi.NewKeyboardButton("👥 Юзеры и Трафик")),
+			tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("🎫 Создать инвайт")),
+		)
+
 		for update := range updates {
 			if update.Message == nil { continue }
 			txt := update.Message.Text
-			if fmt.Sprintf("%d", update.Message.Chat.ID) == cfg.ChatID {
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "")
+			chatID := update.Message.Chat.ID
+			
+			if fmt.Sprintf("%d", chatID) == cfg.ChatID {
+				msg := tgbotapi.NewMessage(chatID, "")
+				
 				if txt == "/start" || txt == "/menu" {
-					msg.Text = "🧠 Master API v9.0\n/invite - Создать инвайт\n/users - Статистика"
-				} else if txt == "/invite" {
+					msg.Text = "🧠 Master API v10.0 Enterprise"
+					msg.ReplyMarkup = mainKeyboard
+				} else if txt == "🎫 Создать инвайт" || txt == "/invite" {
 					b := make([]byte, 4); rand.Read(b); code := "INV-" + strings.ToUpper(hex.EncodeToString(b))
 					db.Exec("INSERT INTO invites (code) VALUES (?)", code)
-					msg.Text = fmt.Sprintf("✅ Инвайт: <code>%s</code>\n🔗 https://t.me/%s?start=%s", code, bot.Self.UserName, code)
+					msg.Text = fmt.Sprintf("✅ Инвайт: <code>%s</code>\n🔗 Перешли юзеру:\nhttps://t.me/%s?start=%s", code, bot.Self.UserName, code)
 					msg.ParseMode = "HTML"
-				} else if txt == "/users" {
-					rows, _ := db.Query("SELECT name, traffic_down FROM users")
-					res := "📊 Юзеры:\n"
-					for rows.Next() { var n string; var d int64; rows.Scan(&n, &d); res += fmt.Sprintf("👤 %s: %.2f GB\n", n, float64(d)/1024/1024/1024) }
+				} else if txt == "👥 Юзеры и Трафик" || txt == "/users" {
+					rows, _ := db.Query("SELECT name, traffic_up, traffic_down FROM users")
+					res := "📊 *Статистика пользователей:*\n\n"
+					for rows.Next() { 
+						var n string; var u, d int64; rows.Scan(&n, &u, &d)
+						res += fmt.Sprintf("👤 *%s*\n 🔽 %.2f GB | 🔼 %.2f GB\n\n", n, float64(d)/1073741824, float64(u)/1073741824) 
+					}
+					if res == "📊 *Статистика пользователей:*\n\n" { res = "Пока нет активных пользователей." }
 					msg.Text = res
+					msg.ParseMode = "Markdown"
+				} else if txt == "📊 Статус кластера" {
+					var bC, eC int
+					db.QueryRow("SELECT COUNT(*) FROM bridges WHERE last_seen > datetime('now', '-5 minute')").Scan(&bC)
+					db.QueryRow("SELECT COUNT(*) FROM exits").Scan(&eC)
+					msg.Text = fmt.Sprintf("🌐 *Состояние инфраструктуры:*\n\n🇷🇺 Активных RU-мостов: *%d*\n🇪🇺 Подключено EU-нод: *%d*", bC, eC)
+					msg.ParseMode = "Markdown"
 				}
-				bot.Send(msg)
+				if msg.Text != "" { bot.Send(msg) }
 			}
+			
+			// Логика активации инвайта
 			if strings.HasPrefix(txt, "/start INV-") {
 				code := strings.TrimPrefix(txt, "/start ")
 				var ex int
@@ -268,7 +291,9 @@ func main() {
 					name := update.Message.From.UserName; if name == "" { name = fmt.Sprintf("user_%d", update.Message.From.ID) }
 					db.Exec("INSERT INTO users (uuid, name) VALUES (?, ?)", uuid, name)
 					db.Exec("DELETE FROM invites WHERE code=?", code)
-					bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("✅ Готово! Твой VPN:\nhttps://%s/sub/%s.html", cfg.Domain, uuid)))
+					bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Профиль успешно создан!\n\n👇 Нажми на ссылку для настройки VPN:\nhttps://%s/sub/%s.html", cfg.Domain, uuid)))
+				} else {
+					bot.Send(tgbotapi.NewMessage(chatID, "❌ Инвайт недействителен или уже использован."))
 				}
 			}
 		}
@@ -310,7 +335,7 @@ var (
 type State struct {
 	BridgeUUID string              `json:"bridge_uuid"`
 	Users      []map[string]string `json:"users"`
-	Exits      []map[string]string `json:"exits"`
+	Exits[]map[string]string `json:"exits"`
 }
 
 func syncWithMaster() {
@@ -323,8 +348,6 @@ func syncWithMaster() {
 	var state State
 	json.NewDecoder(resp.Body).Decode(&state)
 
-	// 1. Сверяем EU ноды. Если изменились - генерим конфиг и рестарт.
-	// Вшиваем ЮЗЕРОВ прямо в генерируемый JSON (Zero Downtime)
 	eJSON, _ := json.Marshal(state.Exits)
 	cHash := fmt.Sprintf("%x", sha256.Sum256(eJSON))
 	
@@ -333,10 +356,9 @@ func syncWithMaster() {
 		lastExitsHash = cHash
 		knownUsers = make(map[string]string)
 		for _, u := range state.Users { knownUsers[u["uuid"]] = u["email"] }
-		return // Рестарт уже подтянул юзеров, gRPC дергать не надо
+		return
 	}
 
-	// 2. Если ноды не менялись, сверяем юзеров по gRPC
 	newKnown := make(map[string]string)
 	for _, u := range state.Users {
 		newKnown[u["uuid"]] = u["email"]
@@ -354,14 +376,12 @@ func buildAndRestartXray(bridgeUUID string, exits, users []map[string]string) {
 	if len(p) != 2 { return }
 	pk, sid := p[0], p[1]
 
-	// Готовим юзеров для Inbound
 	var clientArr[]string
 	for _, u := range users {
 		clientArr = append(clientArr, fmt.Sprintf(`{"id":"%s","email":"%s","flow":"xtls-rprx-vision"}`, u["uuid"], u["email"]))
 	}
 	clientsJSON := "[" + strings.Join(clientArr, ",") + "]"
 
-	// Готовим Outbounds (Балансировка TCP, xHTTP, SS)
 	var outbounds, balancers[]string
 	for _, e := range exits {
 		ip, pub, ss, xp := e["ip"], e["pub_key"], e["ss_pass"], e["xhttp_path"]
@@ -374,7 +394,7 @@ func buildAndRestartXray(bridgeUUID string, exits, users []map[string]string) {
 	oStr := "[]"; if len(outbounds)>0 { oStr = "["+strings.Join(outbounds, ",")+"]" }
 	sStr := "\"block\""; if len(balancers)>0 { sStr = strings.Join(balancers, ",") }
 
-	cfg := fmt.Sprintf(`{"log":{"loglevel":"warning"},"api":{"tag":"api","services":["HandlerService","StatsService"]},"stats":{},"policy":{"levels":{"0":{"statsUserUplink":true,"statsUserDownlink":true}}},"inbounds":[{"tag":"api-in","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}},{"tag":"client-in","port":443,"protocol":"vless","settings":{"clients":%s,"decryption":"none","fallbacks":[{"dest":80}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"www.microsoft.com:443","serverNames":["www.microsoft.com"],"privateKey":"%s","shortIds":["%s"]}}},{"tag":"client-xh","port":8001,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":%s,"decryption":"none"},"streamSettings":{"network":"xhttp","security":"none","xhttpSettings":{"path":"/xtcp","mode":"auto"}}}],"outbounds":[%s,{"tag":"direct","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],"routing":{"domainStrategy":"IPIfNonMatch","balancers":[{"tag":"eu-balancer","selector":[%s]}],"rules":[{"type":"field","inboundTag":["api-in"],"outboundTag":"api"},{"type":"field","inboundTag":["client-in","client-xh"],"balancerTag":"eu-balancer"},{"type":"field","ip":["geoip:private"],"outboundTag":"direct"}]}}`, clientsJSON, pk, sid, clientsJSON, strings.Trim(oStr, "[]"), sStr)
+	cfg := fmt.Sprintf(`{"log":{"loglevel":"warning"},"api":{"tag":"api","services":["HandlerService","StatsService"]},"stats":{},"policy":{"levels":{"0":{"statsUserUplink":true,"statsUserDownlink":true}}},"inbounds":[{"tag":"api-in","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}},{"tag":"client-in","port":443,"protocol":"vless","settings":{"clients":%s,"decryption":"none","fallbacks":[{"dest":80}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"www.microsoft.com:443","serverNames":["www.microsoft.com"],"privateKey":"%s","shortIds":["%s"]}}},{"tag":"client-xh","port":8001,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":%s,"decryption":"none"},"streamSettings":{"network":"xhttp","security":"none","xhttpSettings":{"path":"/xtcp","mode":"auto"}}}],"outbounds":[%s,{"tag":"direct","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],"observatory":{"subjectSelector":[%s],"probeUrl":"https://www.google.com/generate_204","probeInterval":"1m","enableConcurrency":true},"routing":{"domainStrategy":"IPIfNonMatch","balancers":[{"tag":"eu-balancer","selector":[%s],"strategy":{"type":"leastPing"}}],"rules":[{"type":"field","inboundTag":["api-in"],"outboundTag":"api"},{"type":"field","inboundTag":["client-in","client-xh"],"balancerTag":"eu-balancer"},{"type":"field","ip":["geoip:private"],"outboundTag":"direct"}]}}`, clientsJSON, pk, sid, clientsJSON, strings.Trim(oStr, "[]"), sStr, sStr)
 
 	ioutil.WriteFile("/usr/local/etc/xray/config.json",[]byte(cfg), 0644)
 	exec.Command("systemctl", "restart", "xray").Run()
@@ -386,8 +406,10 @@ func alterUserXray(uuid, email string, remove bool) {
 	c := proxyman.NewHandlerServiceClient(conn)
 	if remove {
 		c.AlterInbound(context.Background(), &proxyman.AlterInboundRequest{Tag: "client-in", Operation: serial.ToTypedMessage(&proxyman.RemoveUserOperation{Email: email})})
+		c.AlterInbound(context.Background(), &proxyman.AlterInboundRequest{Tag: "client-xh", Operation: serial.ToTypedMessage(&proxyman.RemoveUserOperation{Email: email})})
 	} else {
 		c.AlterInbound(context.Background(), &proxyman.AlterInboundRequest{Tag: "client-in", Operation: serial.ToTypedMessage(&proxyman.AddUserOperation{User: &protocol.User{Level: 0, Email: email, Account: serial.ToTypedMessage(&vless.Account{Id: uuid, Flow: "xtls-rprx-vision"})}})})
+		c.AlterInbound(context.Background(), &proxyman.AlterInboundRequest{Tag: "client-xh", Operation: serial.ToTypedMessage(&proxyman.AddUserOperation{User: &protocol.User{Level: 0, Email: email, Account: serial.ToTypedMessage(&vless.Account{Id: uuid})}})})
 	}
 }
 
@@ -426,8 +448,6 @@ AGENT_EOF
     echo "⏳ Компиляция Мастера и Агента..."
     go mod init vpn-core
     go get github.com/go-telegram-bot-api/telegram-bot-api/v5 modernc.org/sqlite
-    
-    # Фиксируем версию xray-core чтобы избежать поломок API
     go get github.com/xtls/xray-core@v1.8.8
     
     go build -ldflags="-s -w" -o /usr/local/bin/vpn-master master.go
@@ -493,7 +513,7 @@ create_backup() {
 while true; do
     clear
     API="https://$(grep SUB_DOMAIN /etc/orchestrator/config.env 2>/dev/null | cut -d'"' -f2)"
-    echo "🧠 CLOUD NATIVE ORCHESTRATOR v9.0 Enterprise"
+    echo "🧠 CLOUD NATIVE ORCHESTRATOR v10.0 Enterprise"
     echo "-----------------------------------"
     if[ ! -f /usr/local/bin/vpn-master ]; then
         echo "1. 🛠 Установить Master API"
