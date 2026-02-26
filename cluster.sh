@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# 🚀 VPN CLOUD NATIVE v12.0 (Ansible-way: SSH Push Setup + Agent Pull Runtime)
+# 🚀 VPN CLOUD NATIVE v13.0 (Master API + Agents + TLS/Nextcloud Fake + Deletion)
 # ==============================================================================
 
 export DEBIAN_FRONTEND=noninteractive
@@ -34,7 +34,6 @@ install_master() {
     CLUSTER_TOKEN=$(openssl rand -hex 16)
     BRIDGE_UUID=$(uuidgen)
     
-    # Генерация SSH ключа кластера (без пароля)
     if[ ! -f /root/.ssh/vpn_cluster_key ]; then
         echo "🔑 Генерация SSH-ключей кластера..."
         ssh-keygen -t ed25519 -f /root/.ssh/vpn_cluster_key -N "" -q
@@ -50,7 +49,6 @@ BRIDGE_UUID="$BRIDGE_UUID"
 MASTER_IP="$MASTER_IP"
 EOF
 
-    # NGINX
     systemctl stop nginx 2>/dev/null
     certbot certonly --standalone -d "$SUB_DOMAIN" -m "$SSL_EMAIL" --agree-tos -n
     
@@ -99,7 +97,7 @@ func initDB() {
 	db, _ = sql.Open("sqlite", "/etc/orchestrator/core.db?_pragma=journal_mode(WAL)")
 	db.Exec(`CREATE TABLE IF NOT EXISTS users (uuid TEXT PRIMARY KEY, name TEXT, traffic_up INT DEFAULT 0, traffic_down INT DEFAULT 0)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS bridges (ip TEXT PRIMARY KEY, domain TEXT, pub_key TEXT, sid TEXT, last_seen DATETIME)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS bridges (ip TEXT PRIMARY KEY, domain TEXT, pub_key TEXT, sid TEXT, mode TEXT, last_seen DATETIME)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS exits (ip TEXT PRIMARY KEY, pub_key TEXT, ss_pass TEXT, xhttp_path TEXT)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, val TEXT)`)
 	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('sni', 'www.microsoft.com')`)
@@ -138,7 +136,7 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 	uRows, _ := db.Query("SELECT uuid, name FROM users")
 	for uRows.Next() { var u, n string; uRows.Scan(&u, &n); users = append(users, map[string]string{"uuid": u, "email": n}) }
 	
-	exits :=[]map[string]string{}
+	exits := []map[string]string{}
 	eRows, _ := db.Query("SELECT ip, pub_key, ss_pass, xhttp_path FROM exits")
 	for eRows.Next() { var ip, pk, ss, xp string; eRows.Scan(&ip, &pk, &ss, &xp); exits = append(exits, map[string]string{"ip": ip, "pub_key": pk, "ss_pass": ss, "xhttp_path": xp}) }
 
@@ -146,10 +144,22 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
-	var stats[]map[string]interface{}
+	var stats []map[string]interface{}
 	json.NewDecoder(r.Body).Decode(&stats)
 	for _, s := range stats {
 		db.Exec("UPDATE users SET traffic_up=traffic_up+?, traffic_down=traffic_down+? WHERE name=?", int64(s["up"].(float64)), int64(s["down"].(float64)), s["email"].(string))
+	}
+	w.WriteHeader(200)
+}
+
+func handleRegister(w http.ResponseWriter, r *http.Request) {
+	typ, ip, pk := r.URL.Query().Get("type"), r.URL.Query().Get("ip"), r.URL.Query().Get("pk")
+	if typ == "eu" {
+		db.Exec("INSERT OR REPLACE INTO exits (ip, pub_key, ss_pass, xhttp_path) VALUES (?, ?, ?, ?)", ip, pk, r.URL.Query().Get("ss"), r.URL.Query().Get("xp"))
+	} else if typ == "ru" {
+		mode := r.URL.Query().Get("mode")
+		if mode == "" { mode = "reality" }
+		db.Exec("INSERT OR REPLACE INTO bridges (ip, domain, pub_key, sid, mode, last_seen) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", ip, r.URL.Query().Get("domain"), pk, r.URL.Query().Get("sid"), mode)
 	}
 	w.WriteHeader(200)
 }
@@ -165,11 +175,17 @@ func handleSub(w http.ResponseWriter, r *http.Request) {
 	var sni string; db.QueryRow("SELECT val FROM settings WHERE key='sni'").Scan(&sni)
 
 	var links[]string
-	bRows, _ := db.Query("SELECT domain, pub_key, sid FROM bridges")
+	bRows, _ := db.Query("SELECT ip, domain, pub_key, sid, mode FROM bridges")
 	for bRows.Next() {
-		var d, pk, sid string; bRows.Scan(&d, &pk, &sid)
-		links = append(links, fmt.Sprintf("vless://%s@%s:443?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=%s#%s-[TCP-%s]", uuid, d, pk, sid, sni, name, d))
-		links = append(links, fmt.Sprintf("vless://%s@%s:443?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%%2Fxtcp&sni=%s#%s-[xHTTP-%s]", uuid, d, pk, sid, sni, name, d))
+		var dIP, d, pk, sid, mode string; bRows.Scan(&dIP, &d, &pk, &sid, &mode)
+		if mode == "tls" {
+			links = append(links, fmt.Sprintf("vless://%s@%s:443?security=tls&encryption=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=%s#%s-[TLS-%s]", uuid, d, d, name, d))
+		} else {
+            port := "443"
+            if dIP == cfg.MasterIP || dIP == "127.0.0.1" { port = "4433" } // Локальный мост на 4433
+			links = append(links, fmt.Sprintf("vless://%s@%s:%s?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=%s#%s-[TCP-%s]", uuid, dIP, port, pk, sid, sni, name, d))
+			links = append(links, fmt.Sprintf("vless://%s@%s:%s?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%%2Fxtcp&sni=%s#%s-[xHTTP-%s]", uuid, dIP, port, pk, sid, sni, name, d))
+		}
 	}
 	
 	if isHTML {
@@ -187,6 +203,7 @@ func main() {
 	loadConfig(); initDB()
 	http.HandleFunc("/api/sync", authMw(handleSync))
 	http.HandleFunc("/api/stats", authMw(handleStats))
+	http.HandleFunc("/api/register", authMw(handleRegister))
 	http.HandleFunc("/sub/", handleSub)
 	http.Handle("/download/", http.StripPrefix("/download/", http.FileServer(http.Dir("/etc/orchestrator/bin"))))
 	go http.ListenAndServe("127.0.0.1:8080", nil)
@@ -209,7 +226,7 @@ func main() {
 			if fmt.Sprintf("%d", chatID) == cfg.ChatID {
 				msg := tgbotapi.NewMessage(chatID, "")
 				if txt == "/start" || txt == "/menu" {
-					msg.Text = "🧠 Master API v12.0"
+					msg.Text = "🧠 Master API v13.0"
 					msg.ReplyMarkup = mainKeyboard
 				} else if txt == "🎫 Создать инвайт" || txt == "/invite" {
 					b := make([]byte, 4); rand.Read(b); code := "INV-" + strings.ToUpper(hex.EncodeToString(b))
@@ -304,7 +321,7 @@ type State struct {
 	BridgeUUID  string              `json:"bridge_uuid"`
 	SNI         string              `json:"sni"`
 	WarpDomains string              `json:"warp_domains"`
-	Users[]map[string]string `json:"users"`
+	Users       []map[string]string `json:"users"`
 	Exits       []map[string]string `json:"exits"`
 }
 
@@ -343,8 +360,16 @@ func syncWithMaster() {
 func buildAndRestartXray(state State) {
 	keys, _ := ioutil.ReadFile("/usr/local/etc/xray/agent_keys.txt")
 	p := strings.Split(strings.TrimSpace(string(keys)), "|")
-	if len(p) != 2 { return }
-	pk, sid := p[0], p[1]
+	
+	mode := "reality"
+	pk, sid, tlsDomain := "", "", ""
+	if len(p) >= 2 && p[0] == "tls" {
+		mode = "tls"
+		tlsDomain = p[1]
+	} else if len(p) >= 2 {
+		pk = p[0]
+		sid = p[1]
+	}
 
 	var clientArr[]string
 	for _, u := range state.Users {
@@ -364,7 +389,14 @@ func buildAndRestartXray(state State) {
 	oStr := "[]"; if len(outbounds)>0 { oStr = "["+strings.Join(outbounds, ",")+"]" }
 	sStr := "\"block\""; if len(balancers)>0 { sStr = strings.Join(balancers, ",") }
 
-	cfg := fmt.Sprintf(`{"log":{"loglevel":"warning"},"api":{"tag":"api","services":["HandlerService","StatsService"]},"stats":{},"policy":{"levels":{"0":{"statsUserUplink":true,"statsUserDownlink":true}}},"inbounds":[{"tag":"api-in","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}},{"tag":"client-in","port":443,"protocol":"vless","settings":{"clients":%s,"decryption":"none","fallbacks":[{"dest":80}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"%s:443","serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]}}},{"tag":"client-xh","port":8001,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":%s,"decryption":"none"},"streamSettings":{"network":"xhttp","security":"none","xhttpSettings":{"path":"/xtcp","mode":"auto"}}}],"outbounds":[%s,{"tag":"direct","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],"observatory":{"subjectSelector":[%s],"probeUrl":"https://www.google.com/generate_204","probeInterval":"1m","enableConcurrency":true},"routing":{"domainStrategy":"IPIfNonMatch","balancers":[{"tag":"eu-balancer","selector":[%s],"strategy":{"type":"leastPing"}}],"rules":[{"type":"field","inboundTag":["api-in"],"outboundTag":"api"},{"type":"field","inboundTag":["client-in","client-xh"],"balancerTag":"eu-balancer"},{"type":"field","ip":["geoip:private"],"outboundTag":"direct"}]}}`, clientsJSON, state.SNI, state.SNI, pk, sid, clientsJSON, strings.Trim(oStr, "[]"), sStr, sStr)
+	inboundsJSON := ""
+	if mode == "tls" {
+		inboundsJSON = fmt.Sprintf(`[{"tag":"api-in","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}},{"tag":"client-in","port":443,"protocol":"vless","settings":{"clients":%s,"decryption":"none","fallbacks":[{"dest":8080}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/etc/letsencrypt/live/%s/fullchain.pem","keyFile":"/etc/letsencrypt/live/%s/privkey.pem"}]}}}]`, clientsJSON, tlsDomain, tlsDomain)
+	} else {
+		inboundsJSON = fmt.Sprintf(`[{"tag":"api-in","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}},{"tag":"client-in","port":443,"protocol":"vless","settings":{"clients":%s,"decryption":"none","fallbacks":[{"dest":80}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"%s:443","serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]}}},{"tag":"client-xh","port":8001,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":%s,"decryption":"none"},"streamSettings":{"network":"xhttp","security":"none","xhttpSettings":{"path":"/xtcp","mode":"auto"}}}]`, clientsJSON, state.SNI, state.SNI, pk, sid, clientsJSON)
+	}
+
+	cfg := fmt.Sprintf(`{"log":{"loglevel":"warning"},"api":{"tag":"api","services":["HandlerService","StatsService"]},"stats":{},"policy":{"levels":{"0":{"statsUserUplink":true,"statsUserDownlink":true}}},"inbounds":%s,"outbounds":[%s,{"tag":"direct","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],"observatory":{"subjectSelector":[%s],"probeUrl":"https://www.google.com/generate_204","probeInterval":"1m","enableConcurrency":true},"routing":{"domainStrategy":"IPIfNonMatch","balancers":[{"tag":"eu-balancer","selector":[%s],"strategy":{"type":"leastPing"}}],"rules":[{"type":"field","inboundTag":["api-in"],"outboundTag":"api"},{"type":"field","inboundTag":["client-in","client-xh"],"balancerTag":"eu-balancer"},{"type":"field","ip":["geoip:private"],"outboundTag":"direct"}]}}`, inboundsJSON, strings.Trim(oStr, "[]"), sStr, sStr)
 
 	ioutil.WriteFile("/usr/local/etc/xray/config.json",[]byte(cfg), 0644)
 	exec.Command("systemctl", "restart", "xray").Run()
@@ -424,17 +456,16 @@ AGENT_EOF
     mkdir -p /etc/orchestrator/bin
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /etc/orchestrator/bin/agent agent.go
 
-    cat <<EOF > /etc/systemd/system/vpn-master.service[Unit]
+    cat <<EOF > /etc/systemd/system/vpn-master.service
+[Unit]
 Description=VPN Master API
 [Service]
 ExecStart=/usr/local/bin/vpn-master
 Restart=always
-WorkingDirectory=/etc/orchestrator
-[Install]
+WorkingDirectory=/etc/orchestrator[Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload && systemctl enable vpn-master && systemctl restart vpn-master
-    
     echo "✅ Мастер установлен!"
 }
 
@@ -443,21 +474,40 @@ EOF
 # ==============================================================================
 deploy_node() {
     TYPE=$1
-    if [ "$TYPE" == "ru" ]; then
-        echo -e "\n🌉 ДОБАВЛЕНИЕ RU-МОСТА (Ingress)"
-        echo "💡 Введи 127.0.0.1 для установки моста на этот же сервер."
+    RU_MODE="1" # По умолчанию Reality
+    
+    if [ "$TYPE" == "ru_remote" ]; then
+        echo -e "\n🌉 ДОБАВЛЕНИЕ УДАЛЕННОГО RU-МОСТА"
         read -p "IP адрес сервера: " IP
-        read -p "Домен для моста (bridge.vpn.com): " DOMAIN
-    else
-        echo -e "\n🇪🇺 ДОБАВЛЕНИЕ EU-НОДЫ (Egress + WARP)"
-        read -p "IP адрес сервера: " IP
-    fi
-
-    # Локальная установка
-    if[ "$IP" == "127.0.0.1" ]; then
-        CMD_PREFIX="bash -s"
-    else
         read -s -p "Root пароль от $IP: " PASS; echo ""
+        
+        echo "1) REALITY (Маскировка под чужой сайт, домен не нужен)"
+        echo "2) Classic TLS (Требуется домен, ставится заглушка Nextcloud)"
+        read -p "Режим работы: " RU_MODE
+        
+        if [ "$RU_MODE" == "2" ]; then
+            read -p "Введи домен для моста: " DOMAIN
+            read -p "Email для SSL (Let's Encrypt): " EMAIL
+        else
+            read -p "Домен для моста (просто название для ссылки): " DOMAIN
+        fi
+        
+        echo "⏳ Копирование SSH-ключа на удаленный сервер..."
+        sshpass -p "$PASS" ssh-copy-id -i /root/.ssh/vpn_cluster_key.pub -o StrictHostKeyChecking=no root@$IP >/dev/null 2>&1
+        CMD_PREFIX="ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP bash -s"
+        
+    elif[ "$TYPE" == "ru_local" ]; then
+        echo -e "\n🏠 ДОБАВЛЕНИЕ ЛОКАЛЬНОГО RU-МОСТА (На этом сервере)"
+        echo "Внимание: Локальный мост будет работать только в режиме REALITY на порту 4433."
+        DOMAIN=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
+        IP="127.0.0.1"
+        CMD_PREFIX="bash -s"
+        
+    elif[ "$TYPE" == "eu" ]; then
+        echo -e "\n🇪🇺 ДОБАВЛЕНИЕ EU-НОДЫ (+WARP)"
+        read -p "IP адрес сервера: " IP
+        read -s -p "Root пароль от $IP: " PASS; echo ""
+        
         echo "⏳ Копирование SSH-ключа на удаленный сервер..."
         sshpass -p "$PASS" ssh-copy-id -i /root/.ssh/vpn_cluster_key.pub -o StrictHostKeyChecking=no root@$IP >/dev/null 2>&1
         CMD_PREFIX="ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP bash -s"
@@ -470,23 +520,49 @@ deploy_node() {
 
     echo "⏳ Запуск автоматической настройки сервера..."
     
-    RAW_OUT=$($CMD_PREFIX "$M_IP" "$C_TOK" "$B_UUID" "$M_DOM" "$TYPE" "$DOMAIN" << 'EOF'
-        MASTER_IP=$1; TOKEN=$2; BRIDGE_UUID=$3; MASTER_DOM=$4; TYPE=$5; DOMAIN=$6
+    RAW_OUT=$($CMD_PREFIX "$M_IP" "$C_TOK" "$B_UUID" "$M_DOM" "$TYPE" "$DOMAIN" "$RU_MODE" "$EMAIL" << 'EOF'
+        MASTER_IP=$1; TOKEN=$2; BRIDGE_UUID=$3; MASTER_DOM=$4; TYPE=$5; DOMAIN=$6; RU_MODE=$7; EMAIL=$8
         
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -q >/dev/null 2>&1
         apt-get install -yq curl jq openssl ufw >/dev/null 2>&1
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
         
-        KEYS=$(xray x25519)
-        PK=$(echo "$KEYS" | grep Private | awk '{print $3}')
-        PUB=$(echo "$KEYS" | grep Public | awk '{print $3}')
-        
-        if [ "$TYPE" == "ru" ]; then
-            SID=$(openssl rand -hex 4)
-            echo "$PK|$SID" > /usr/local/etc/xray/agent_keys.txt
+        if [[ "$TYPE" == "ru_remote" || "$TYPE" == "ru_local" ]]; then
             
-            # Установка агента
+            if [ "$RU_MODE" == "2" ]; then
+                # Classic TLS mode setup
+                apt-get install -yq nginx certbot python3-certbot-nginx >/dev/null 2>&1
+                certbot certonly --standalone -d $DOMAIN -m $EMAIL --agree-tos -n >/dev/null 2>&1
+                
+                cat << 'HTML_EOF' > /var/www/html/index.html
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Nextcloud</title><style>body{background-color:#0082c9;background-image:linear-gradient(40deg,#0082c9 0%,#004c8c 100%);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen-Sans,Ubuntu,Cantarell,"Helvetica Neue",sans-serif;color:#fff;height:100vh;margin:0;display:flex;align-items:center;justify-content:center;overflow:hidden}.nc-container{text-align:center;width:100%;max-width:320px;padding:20px}.nc-logo{margin-bottom:30px;display:inline-block}.nc-logo svg{width:110px;fill:#fff}.nc-form{background:#fff;border-radius:8px;padding:40px 30px;box-shadow:0 4px 10px rgba(0,0,0,0.1)}.input-group{margin-bottom:20px}input[type="text"],input[type="password"]{width:100%;padding:12px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;font-size:15px;color:#333;outline:none;transition:border-color 0.2s}input[type="text"]:focus,input[type="password"]:focus{border-color:#0082c9}.btn{background:#0082c9;color:#fff;border:none;border-radius:4px;padding:12px;width:100%;font-size:16px;cursor:pointer;font-weight:600;transition:background 0.2s}.btn:hover{background:#006098}.msg{color:#e9322d;font-size:14px;margin-bottom:15px;display:none;text-align:left}.footer{margin-top:40px;font-size:13px;color:rgba(255,255,255,0.7)}.footer a{color:rgba(255,255,255,0.8);text-decoration:none;font-weight:bold}.footer a:hover{text-decoration:underline}</style></head><body><div class="nc-container"><div class="nc-logo"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><circle cx="50" cy="50" r="35" fill="none" stroke="#fff" stroke-width="8"/><circle cx="28" cy="50" r="16" fill="#fff"/><circle cx="72" cy="50" r="16" fill="#fff"/><circle cx="50" cy="28" r="16" fill="#fff"/></svg></div><div class="nc-form"><div class="msg" id="error-msg">Wrong username or password.</div><form onsubmit="event.preventDefault(); document.getElementById('error-msg').style.display='block'; setTimeout(()=> { document.querySelectorAll('input').forEach(i=>i.value=''); document.getElementById('error-msg').style.display='none'; }, 2000);"><div class="input-group"><input type="text" placeholder="Username or email" required></div><div class="input-group"><input type="password" placeholder="Password" required></div><button type="submit" class="btn">Log in</button></form></div><div class="footer"><a href="#">Nextcloud</a> – a safe home for all your data</div></div></body></html>
+HTML_EOF
+                
+                cat << 'NGINX_EOF' > /etc/nginx/sites-available/default
+server { listen 8080 default_server; root /var/www/html; index index.html; }
+NGINX_EOF
+                systemctl restart nginx
+                echo "tls|$DOMAIN" > /usr/local/etc/xray/agent_keys.txt
+                
+                curl -s -H "Authorization: Bearer $TOKEN" "https://$MASTER_DOM/api/register?type=ru&ip=$(curl -s4 ifconfig.me)&domain=$DOMAIN&mode=tls" >/dev/null
+                echo "NODE_DATA|ru|tls"
+                
+            else
+                # Reality mode setup
+                KEYS=$(xray x25519)
+                PK=$(echo "$KEYS" | grep Private | awk '{print $3}')
+                PUB=$(echo "$KEYS" | grep Public | awk '{print $3}')
+                SID=$(openssl rand -hex 4)
+                echo "$PK|$SID" > /usr/local/etc/xray/agent_keys.txt
+                
+                IP=$(curl -s4 ifconfig.me)
+                if[ "$TYPE" == "ru_local" ]; then IP="127.0.0.1"; fi
+                
+                curl -s -H "Authorization: Bearer $TOKEN" "https://$MASTER_DOM/api/register?type=ru&ip=$IP&domain=$DOMAIN&pk=$PUB&sid=$SID&mode=reality" >/dev/null
+                echo "NODE_DATA|ru|reality"
+            fi
+            
             wget -q https://$MASTER_DOM/download/agent -O /usr/local/bin/vpn-agent
             chmod +x /usr/local/bin/vpn-agent
             cat <<SVC > /etc/systemd/system/vpn-agent.service
@@ -499,13 +575,11 @@ Restart=always
 WantedBy=multi-user.target
 SVC
             systemctl daemon-reload && systemctl enable vpn-agent && systemctl restart vpn-agent
-            ufw allow 443/tcp >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1
+            ufw allow 443/tcp >/dev/null 2>&1
+            ufw allow 4433/tcp >/dev/null 2>&1
+            ufw --force enable >/dev/null 2>&1
             
-            # Отдаем Мастеру данные для записи в БД
-            echo "NODE_DATA|ru|$PUB|$SID"
-            
-        elif [ "$TYPE" == "eu" ]; then
-            # Установка WARP
+        elif[ "$TYPE" == "eu" ]; then
             apt-get install -yq gpg lsb-release >/dev/null 2>&1
             curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
             echo "deb[arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
@@ -516,6 +590,9 @@ SVC
             warp-cli --accept-tos proxy port 40000 >/dev/null 2>&1
             warp-cli --accept-tos connect >/dev/null 2>&1
             
+            KEYS=$(xray x25519)
+            PK=$(echo "$KEYS" | grep Private | awk '{print $3}')
+            PUB=$(echo "$KEYS" | grep Public | awk '{print $3}')
             SS_PASS=$(openssl rand -base64 16)
             XP=$(openssl rand -hex 6)
             
@@ -525,73 +602,48 @@ XCFG
             systemctl restart xray
             ufw allow 443/tcp >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1
             
-            echo "NODE_DATA|eu|$PUB|$SS_PASS|$XP"
+            curl -s -H "Authorization: Bearer $TOKEN" "https://$MASTER_DOM/api/register?type=eu&ip=$(curl -s4 ifconfig.me)&pk=$PUB&ss=$SS_PASS&xp=$XP" >/dev/null
+            echo "NODE_DATA|eu"
         fi
         
-        # Hardening: Отключаем парольный вход (Только по ключам)
-        sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/g' /etc/ssh/sshd_config
-        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+        if [ "$TYPE" != "ru_local" ]; then
+            sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/g' /etc/ssh/sshd_config
+            systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+        fi
 EOF
 )
 
-    # Разбираем вывод от удаленного скрипта
     DATA=$(echo "$RAW_OUT" | grep "NODE_DATA")
-    
-    if[ -z "$DATA" ]; then
+    if [ -z "$DATA" ]; then
         echo "❌ Ошибка деплоя. Лог: $RAW_OUT"
-        return
-    fi
-
-    T=$(echo "$DATA" | cut -d'|' -f2)
-    PUB=$(echo "$DATA" | cut -d'|' -f3)
-
-    if[ "$T" == "ru" ]; then
-        SID=$(echo "$DATA" | cut -d'|' -f4)
-        sqlite3 /etc/orchestrator/core.db "INSERT OR REPLACE INTO bridges (ip, domain, pub_key, sid, last_seen) VALUES ('$IP', '$DOMAIN', '$PUB', '$SID', CURRENT_TIMESTAMP)"
-        echo "✅ RU-Мост успешно развернут и защищен SSH-ключом!"
-    elif [ "$T" == "eu" ]; then
-        SS=$(echo "$DATA" | cut -d'|' -f4)
-        XP=$(echo "$DATA" | cut -d'|' -f5)
-        sqlite3 /etc/orchestrator/core.db "INSERT OR REPLACE INTO exits (ip, pub_key, ss_pass, xhttp_path) VALUES ('$IP', '$PUB', '$SS', '$XP')"
-        echo "✅ EU-Нода успешно развернута и защищена SSH-ключом! Агенты подхватят её через 30 секунд."
+    else
+        echo "✅ Узел успешно развернут и защищен! Мастер подхватит его через 30 секунд."
     fi
 }
 
 # ==============================================================================
-# 3. UTILITIES
+# 3. УДАЛЕНИЕ УЗЛОВ
 # ==============================================================================
-harden_system() {
-    echo "🛡️ УСИЛЕНИЕ БЕЗОПАСНОСТИ МАСТЕРА"
-    if free | awk '/^Swap:/ {exit !$2}'; then echo "✅ SWAP уже есть!"; else
-        fallocate -l 2G /swapfile; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
-        echo "/swapfile none swap sw 0 0" >> /etc/fstab; echo "✅ SWAP создан!"
+delete_node() {
+    echo -e "\n🗑️ УДАЛЕНИЕ СЕРВЕРОВ ИЗ КЛАСТЕРА"
+    echo "1) Удалить RU Мост"
+    echo "2) Удалить EU Ноду"
+    echo "0) Отмена"
+    read -p "Выбор: " DEL_C
+    
+    if [ "$DEL_C" == "1" ]; then
+        echo "Активные RU мосты:"
+        sqlite3 /etc/orchestrator/core.db "SELECT ip, domain, mode FROM bridges"
+        read -p "Введи IP моста для удаления: " DEL_IP
+        sqlite3 /etc/orchestrator/core.db "DELETE FROM bridges WHERE ip='$DEL_IP'"
+        echo "✅ Мост удален из БД. Агенты обновят маршруты."
+    elif [ "$DEL_C" == "2" ]; then
+        echo "Активные EU ноды:"
+        sqlite3 /etc/orchestrator/core.db "SELECT ip FROM exits"
+        read -p "Введи IP ноды для удаления: " DEL_IP
+        sqlite3 /etc/orchestrator/core.db "DELETE FROM exits WHERE ip='$DEL_IP'"
+        echo "✅ EU нода удалена из БД. Агенты исключат её из балансировщика."
     fi
-    apt-get install -yq fail2ban >/dev/null 2>&1
-    echo -e "[sshd]\nenabled=true\nport=1:65535\nmaxretry=5\nbantime=24h" > /etc/fail2ban/jail.local
-    systemctl restart fail2ban; echo "✅ Fail2Ban включен."
-    
-    TG_TOKEN=$(grep "TG_TOKEN" /etc/orchestrator/config.env | cut -d'"' -f2)
-    TG_CHAT=$(grep "TG_CHAT_ID" /etc/orchestrator/config.env | cut -d'"' -f2)
-    cat <<EOF > /etc/profile.d/tg_ssh_notify.sh
-#!/bin/bash
-if[ -n "\$SSH_CLIENT" ]; then
-    IP=\$(echo "\$SSH_CLIENT" | awk '{print \$1}')
-    curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" -d chat_id="$TG_CHAT" -d text="🚨 Вход по SSH на \$(hostname) с IP \$IP" >/dev/null 2>&1 &
-fi
-EOF
-    chmod +x /etc/profile.d/tg_ssh_notify.sh
-    echo "✅ SSH-алерты включены!"
-}
-
-create_backup() {
-    TG_TOKEN=$(grep "TG_TOKEN" /etc/orchestrator/config.env | cut -d'"' -f2)
-    TG_CHAT=$(grep "TG_CHAT_ID" /etc/orchestrator/config.env | cut -d'"' -f2)
-    
-    # Архивация БД, конфигов и SSH КЛЮЧЕЙ
-    tar -czf /tmp/backup.tar.gz /etc/orchestrator/core.db /etc/orchestrator/config.env /root/.ssh/vpn_cluster_key /root/.ssh/vpn_cluster_key.pub 2>/dev/null
-    curl -s -F chat_id="$TG_CHAT" -F document=@"/tmp/backup.tar.gz" -F caption="📦 Full Backup $(date +%F)" "https://api.telegram.org/bot$TG_TOKEN/sendDocument" >/dev/null
-    rm -f /tmp/backup.tar.gz
-    echo "✅ Полный бекап с SSH-ключами отправлен в Telegram!"
 }
 
 # ==============================================================================
@@ -599,26 +651,26 @@ create_backup() {
 # ==============================================================================
 while true; do
     clear
-    echo "🧠 VPN CLOUD NATIVE v12.0 (Ansible-way)"
+    echo "🧠 VPN CLOUD NATIVE v13.0 (Ansible-way)"
     echo "---------------------------------------"
     if [ ! -f /usr/local/bin/vpn-master ]; then
         echo "1. 🛠 Установить Master API"
     else
-        echo "2. 🌉 Добавить RU-Мост (Local / Remote SSH)"
-        echo "3. 🇪🇺 Добавить EU-Ноду (Remote SSH)"
+        echo "2. 🏠 Добавить Локальный RU-Мост (127.0.0.1)"
+        echo "3. 🌉 Добавить Удаленный RU-Мост (SSH)"
+        echo "4. 🇪🇺 Добавить EU-Ноду (SSH)"
+        echo "5. 🗑️ Удалить узел (RU/EU)"
     fi
     echo "---------------------------------------"
-    echo "4. 🛡️ Усилить безопасность Мастера (SWAP, Alerts)"
-    echo "5. 📦 Сделать полный бекап в Telegram"
     echo "0. Выход"
     echo "---------------------------------------"
     read -p "Выбор: " C
     case $C in
         1) install_master ; read -p "Enter..." ;;
-        2) deploy_node "ru" ; read -p "Enter..." ;;
-        3) deploy_node "eu" ; read -p "Enter..." ;;
-        4) harden_system ; read -p "Enter..." ;;
-        5) create_backup ; read -p "Enter..." ;;
+        2) deploy_node "ru_local" ; read -p "Enter..." ;;
+        3) deploy_node "ru_remote" ; read -p "Enter..." ;;
+        4) deploy_node "eu" ; read -p "Enter..." ;;
+        5) delete_node ; read -p "Enter..." ;;
         0) exit 0 ;;
     esac
 done
