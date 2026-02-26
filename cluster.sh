@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# 🚀 VPN CLOUD NATIVE v10.0 Enterprise (Master API + Agents + Observatory)
+# 🚀 VPN CLOUD NATIVE v11.0 (Master API + Agents + Dynamic SNI/WARP + Alerts)
 # ==============================================================================
 
 export DEBIAN_FRONTEND=noninteractive
@@ -44,7 +44,7 @@ BRIDGE_UUID="$BRIDGE_UUID"
 MASTER_IP="$MASTER_IP"
 EOF
 
-    # NGINX
+    # NGINX (Проксирует API)
     systemctl stop nginx 2>/dev/null
     certbot certonly --standalone -d "$SUB_DOMAIN" -m "$SSL_EMAIL" --agree-tos -n
     
@@ -96,6 +96,11 @@ func initDB() {
 	db.Exec(`CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS bridges (ip TEXT PRIMARY KEY, domain TEXT, pub_key TEXT, sid TEXT, last_seen DATETIME)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS exits (ip TEXT PRIMARY KEY, pub_key TEXT, ss_pass TEXT, xhttp_path TEXT)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, val TEXT)`)
+	
+	// Default Settings
+	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('sni', 'www.microsoft.com')`)
+	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('warp_domains', '"geosite:google","geosite:openai","geosite:netflix","geosite:instagram"')`)
 }
 
 func loadConfig() {
@@ -122,6 +127,10 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 	bridgeIP := r.Header.Get("X-Bridge-IP")
 	if bridgeIP != "" { db.Exec("UPDATE bridges SET last_seen=CURRENT_TIMESTAMP WHERE ip=?", bridgeIP) }
 
+	var sni, warp string
+	db.QueryRow("SELECT val FROM settings WHERE key='sni'").Scan(&sni)
+	db.QueryRow("SELECT val FROM settings WHERE key='warp_domains'").Scan(&warp)
+
 	users := []map[string]string{}
 	uRows, _ := db.Query("SELECT uuid, name FROM users")
 	for uRows.Next() { var u, n string; uRows.Scan(&u, &n); users = append(users, map[string]string{"uuid": u, "email": n}) }
@@ -130,7 +139,13 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 	eRows, _ := db.Query("SELECT ip, pub_key, ss_pass, xhttp_path FROM exits")
 	for eRows.Next() { var ip, pk, ss, xp string; eRows.Scan(&ip, &pk, &ss, &xp); exits = append(exits, map[string]string{"ip": ip, "pub_key": pk, "ss_pass": ss, "xhttp_path": xp}) }
 
-	json.NewEncoder(w).Encode(map[string]interface{}{"bridge_uuid": cfg.BridgeUUID, "users": users, "exits": exits})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"bridge_uuid": cfg.BridgeUUID, 
+		"sni": sni, 
+		"warp_domains": warp, 
+		"users": users, 
+		"exits": exits,
+	})
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
@@ -160,17 +175,20 @@ func handleSub(w http.ResponseWriter, r *http.Request) {
 	var name string
 	if db.QueryRow("SELECT name FROM users WHERE uuid=?", uuid).Scan(&name) != nil { http.Error(w, "Not found", 404); return }
 
+	var sni string
+	db.QueryRow("SELECT val FROM settings WHERE key='sni'").Scan(&sni)
+
 	var links[]string
 	bRows, _ := db.Query("SELECT domain, pub_key, sid FROM bridges")
 	for bRows.Next() {
 		var d, pk, sid string; bRows.Scan(&d, &pk, &sid)
-		links = append(links, fmt.Sprintf("vless://%s@%s:443?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=www.microsoft.com#%s-[TCP-%s]", uuid, d, pk, sid, name, d))
-		links = append(links, fmt.Sprintf("vless://%s@%s:443?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%%2Fxtcp&sni=www.microsoft.com#%s-[xHTTP-%s]", uuid, d, pk, sid, name, d))
+		links = append(links, fmt.Sprintf("vless://%s@%s:443?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=%s#%s-[TCP-%s]", uuid, d, pk, sid, sni, name, d))
+		links = append(links, fmt.Sprintf("vless://%s@%s:443?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%%2Fxtcp&sni=%s#%s-[xHTTP-%s]", uuid, d, pk, sid, sni, name, d))
 	}
 	
 	if isHTML {
 		u := "https://" + cfg.Domain + "/sub/" + uuid
-		h := fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>VPN Setup</title><style>body{background:#121212;color:#e0e0e0;font-family:sans-serif;text-align:center;padding:20px}.card{background:#1e1e1e;padding:30px;border-radius:16px;max-width:400px;margin:auto}.btn{display:block;padding:14px;margin-bottom:12px;border-radius:12px;text-decoration:none;font-weight:bold}.btn-ios{background:#007AFF;color:#fff}.btn-android{background:#3DDC84;color:#000}.raw-link{background:#111;padding:10px;border-radius:8px;font-family:monospace;font-size:12px;word-break:break-all}</style></head><body><div class="card"><h2>Привет, %s!</h2><a href="v2raytun://import/%s" class="btn btn-ios">🍏 Подключить iOS / Mac</a><a href="hiddify://install-config?url=%s" class="btn btn-android">🤖 Подключить Android</a><p>Прямая ссылка:</p><div class="raw-link">%s</div></div></body></html>`, name, u, u, u)
+		h := fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>VPN Setup</title><script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script><style>body{background:#121212;color:#e0e0e0;font-family:sans-serif;text-align:center;padding:20px}.card{background:#1e1e1e;padding:30px;border-radius:16px;max-width:400px;margin:auto}.btn{display:block;padding:14px;margin-bottom:12px;border-radius:12px;text-decoration:none;font-weight:bold}.btn-ios{background:#007AFF;color:#fff}.btn-android{background:#3DDC84;color:#000}#qr{margin:20px auto;background:#fff;padding:10px;border-radius:8px;display:inline-block}.raw-link{background:#111;padding:10px;border-radius:8px;font-family:monospace;font-size:12px;word-break:break-all}</style></head><body><div class="card"><h2>Привет, %s!</h2><div id="qr"></div><a href="v2raytun://import/%s" class="btn btn-ios">🍏 Подключить iOS / Mac</a><a href="hiddify://install-config?url=%s" class="btn btn-android">🤖 Подключить Android</a><p>Прямая ссылка:</p><div class="raw-link">%s</div></div><script>new QRCode(document.getElementById("qr"), "%s");</script></body></html>`, name, u, u, u, u)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(h))
 	} else {
@@ -193,8 +211,10 @@ echo "$PK|$SID" > /usr/local/etc/xray/agent_keys.txt
 IP=$(curl -s4 ifconfig.me)
 curl -H "Authorization: Bearer %s" "%s/api/register?type=ru&ip=$IP&domain=$DOMAIN&pk=$PUB&sid=$SID"
 wget -q %s/download/agent -O /usr/local/bin/vpn-agent && chmod +x /usr/local/bin/vpn-agent
-cat <<EOF > /etc/systemd/system/vpn-agent.service[Unit]
-Description=VPN Agent[Service]
+cat <<EOF > /etc/systemd/system/vpn-agent.service
+[Unit]
+Description=VPN Agent
+[Service]
 ExecStart=/usr/local/bin/vpn-agent -master %s -token %s
 Restart=always
 [Install]
@@ -242,7 +262,7 @@ func main() {
 		
 		mainKeyboard := tgbotapi.NewReplyKeyboard(
 			tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("📊 Статус кластера"), tgbotapi.NewKeyboardButton("👥 Юзеры и Трафик")),
-			tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("🎫 Создать инвайт")),
+			tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("🎫 Создать инвайт"), tgbotapi.NewKeyboardButton("⚙️ Настройки")),
 		)
 
 		for update := range updates {
@@ -254,7 +274,7 @@ func main() {
 				msg := tgbotapi.NewMessage(chatID, "")
 				
 				if txt == "/start" || txt == "/menu" {
-					msg.Text = "🧠 Master API v10.0 Enterprise"
+					msg.Text = "🧠 Master API v11.0 Ultimate"
 					msg.ReplyMarkup = mainKeyboard
 				} else if txt == "🎫 Создать инвайт" || txt == "/invite" {
 					b := make([]byte, 4); rand.Read(b); code := "INV-" + strings.ToUpper(hex.EncodeToString(b))
@@ -275,8 +295,26 @@ func main() {
 					var bC, eC int
 					db.QueryRow("SELECT COUNT(*) FROM bridges WHERE last_seen > datetime('now', '-5 minute')").Scan(&bC)
 					db.QueryRow("SELECT COUNT(*) FROM exits").Scan(&eC)
-					msg.Text = fmt.Sprintf("🌐 *Состояние инфраструктуры:*\n\n🇷🇺 Активных RU-мостов: *%d*\n🇪🇺 Подключено EU-нод: *%d*", bC, eC)
+					var sni, warp string
+					db.QueryRow("SELECT val FROM settings WHERE key='sni'").Scan(&sni)
+					db.QueryRow("SELECT val FROM settings WHERE key='warp_domains'").Scan(&warp)
+					
+					msg.Text = fmt.Sprintf("🌐 *Состояние инфраструктуры:*\n\n🇷🇺 Активных RU-мостов: *%d*\n🇪🇺 Подключено EU-нод: *%d*\n\n🎭 Текущий SNI: `%s`\n🚀 WARP Домены: `%s`", bC, eC, sni, warp)
 					msg.ParseMode = "Markdown"
+				} else if txt == "⚙️ Настройки" {
+					msg.Text = "Доступные команды настройки (отправь сообщением):\n\n`/sni www.apple.com` - Сменить сайт маскировки\n`/warp geosite:google,domain:chatgpt.com` - Указать домены для WARP"
+					msg.ParseMode = "Markdown"
+				} else if strings.HasPrefix(txt, "/sni ") {
+					newSNI := strings.TrimPrefix(txt, "/sni ")
+					db.Exec("UPDATE settings SET val=? WHERE key='sni'", newSNI)
+					msg.Text = "✅ SNI изменен на " + newSNI + ". Агенты применят его в течение 30 секунд (без разрыва связи)."
+				} else if strings.HasPrefix(txt, "/warp ") {
+					nW := strings.TrimPrefix(txt, "/warp ")
+					parts := strings.Split(nW, ",")
+					for i, p := range parts { parts[i] = fmt.Sprintf(`"%s"`, strings.TrimSpace(p)) }
+					finalWarp := strings.Join(parts, ",")
+					db.Exec("UPDATE settings SET val=? WHERE key='warp_domains'", finalWarp)
+					msg.Text = "✅ Маршруты WARP изменены. Агенты применят их в течение 30 секунд."
 				}
 				if msg.Text != "" { bot.Send(msg) }
 			}
@@ -328,14 +366,16 @@ import (
 )
 
 var (
-	masterURL, token, lastExitsHash string
+	masterURL, token, lastHash string
 	knownUsers = make(map[string]string)
 )
 
 type State struct {
-	BridgeUUID string              `json:"bridge_uuid"`
-	Users      []map[string]string `json:"users"`
-	Exits[]map[string]string `json:"exits"`
+	BridgeUUID  string              `json:"bridge_uuid"`
+	SNI         string              `json:"sni"`
+	WarpDomains string              `json:"warp_domains"`
+	Users       []map[string]string `json:"users"`
+	Exits       []map[string]string `json:"exits"`
 }
 
 func syncWithMaster() {
@@ -348,12 +388,13 @@ func syncWithMaster() {
 	var state State
 	json.NewDecoder(resp.Body).Decode(&state)
 
+	// Хэш зависит от Нод, SNI и WARP доменов
 	eJSON, _ := json.Marshal(state.Exits)
-	cHash := fmt.Sprintf("%x", sha256.Sum256(eJSON))
+	cHash := fmt.Sprintf("%x", sha256.Sum256([]byte(string(eJSON)+state.SNI+state.WarpDomains)))
 	
-	if cHash != lastExitsHash {
-		buildAndRestartXray(state.BridgeUUID, state.Exits, state.Users)
-		lastExitsHash = cHash
+	if cHash != lastHash {
+		buildAndRestartXray(state)
+		lastHash = cHash
 		knownUsers = make(map[string]string)
 		for _, u := range state.Users { knownUsers[u["uuid"]] = u["email"] }
 		return
@@ -370,23 +411,23 @@ func syncWithMaster() {
 	knownUsers = newKnown
 }
 
-func buildAndRestartXray(bridgeUUID string, exits, users []map[string]string) {
+func buildAndRestartXray(state State) {
 	keys, _ := ioutil.ReadFile("/usr/local/etc/xray/agent_keys.txt")
 	p := strings.Split(strings.TrimSpace(string(keys)), "|")
 	if len(p) != 2 { return }
 	pk, sid := p[0], p[1]
 
 	var clientArr[]string
-	for _, u := range users {
+	for _, u := range state.Users {
 		clientArr = append(clientArr, fmt.Sprintf(`{"id":"%s","email":"%s","flow":"xtls-rprx-vision"}`, u["uuid"], u["email"]))
 	}
 	clientsJSON := "[" + strings.Join(clientArr, ",") + "]"
 
 	var outbounds, balancers[]string
-	for _, e := range exits {
+	for _, e := range state.Exits {
 		ip, pub, ss, xp := e["ip"], e["pub_key"], e["ss_pass"], e["xhttp_path"]
-		outbounds = append(outbounds, fmt.Sprintf(`{"tag":"eu-tcp-%s","protocol":"vless","settings":{"vnext":[{"address":"%s","port":443,"users":[{"id":"%s","flow":"xtls-rprx-vision","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"www.microsoft.com","publicKey":"%s","fingerprint":"chrome"}}}`, ip, ip, bridgeUUID, pub))
-		outbounds = append(outbounds, fmt.Sprintf(`{"tag":"eu-xh-%s","protocol":"vless","settings":{"vnext":[{"address":"%s","port":4433,"users":[{"id":"%s","encryption":"none"}]}]},"streamSettings":{"network":"xhttp","security":"reality","xhttpSettings":{"path":"/%s","mode":"auto"},"realitySettings":{"serverName":"www.microsoft.com","publicKey":"%s","fingerprint":"chrome"}}}`, ip, ip, bridgeUUID, xp, pub))
+		outbounds = append(outbounds, fmt.Sprintf(`{"tag":"eu-tcp-%s","protocol":"vless","settings":{"vnext":[{"address":"%s","port":443,"users":[{"id":"%s","flow":"xtls-rprx-vision","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"%s","publicKey":"%s","fingerprint":"chrome"}}}`, ip, ip, state.BridgeUUID, state.SNI, pub))
+		outbounds = append(outbounds, fmt.Sprintf(`{"tag":"eu-xh-%s","protocol":"vless","settings":{"vnext":[{"address":"%s","port":4433,"users":[{"id":"%s","encryption":"none"}]}]},"streamSettings":{"network":"xhttp","security":"reality","xhttpSettings":{"path":"/%s","mode":"auto"},"realitySettings":{"serverName":"%s","publicKey":"%s","fingerprint":"chrome"}}}`, ip, ip, state.BridgeUUID, xp, state.SNI, pub))
 		outbounds = append(outbounds, fmt.Sprintf(`{"tag":"eu-ss-%s","protocol":"shadowsocks","settings":{"servers":[{"address":"%s","port":5000,"method":"2022-blake3-aes-128-gcm","password":"%s"}]}}`, ip, ip, ss))
 		balancers = append(balancers, fmt.Sprintf(`"eu-tcp-%s"`, ip), fmt.Sprintf(`"eu-xh-%s"`, ip), fmt.Sprintf(`"eu-ss-%s"`, ip))
 	}
@@ -394,7 +435,8 @@ func buildAndRestartXray(bridgeUUID string, exits, users []map[string]string) {
 	oStr := "[]"; if len(outbounds)>0 { oStr = "["+strings.Join(outbounds, ",")+"]" }
 	sStr := "\"block\""; if len(balancers)>0 { sStr = strings.Join(balancers, ",") }
 
-	cfg := fmt.Sprintf(`{"log":{"loglevel":"warning"},"api":{"tag":"api","services":["HandlerService","StatsService"]},"stats":{},"policy":{"levels":{"0":{"statsUserUplink":true,"statsUserDownlink":true}}},"inbounds":[{"tag":"api-in","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}},{"tag":"client-in","port":443,"protocol":"vless","settings":{"clients":%s,"decryption":"none","fallbacks":[{"dest":80}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"www.microsoft.com:443","serverNames":["www.microsoft.com"],"privateKey":"%s","shortIds":["%s"]}}},{"tag":"client-xh","port":8001,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":%s,"decryption":"none"},"streamSettings":{"network":"xhttp","security":"none","xhttpSettings":{"path":"/xtcp","mode":"auto"}}}],"outbounds":[%s,{"tag":"direct","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],"observatory":{"subjectSelector":[%s],"probeUrl":"https://www.google.com/generate_204","probeInterval":"1m","enableConcurrency":true},"routing":{"domainStrategy":"IPIfNonMatch","balancers":[{"tag":"eu-balancer","selector":[%s],"strategy":{"type":"leastPing"}}],"rules":[{"type":"field","inboundTag":["api-in"],"outboundTag":"api"},{"type":"field","inboundTag":["client-in","client-xh"],"balancerTag":"eu-balancer"},{"type":"field","ip":["geoip:private"],"outboundTag":"direct"}]}}`, clientsJSON, pk, sid, clientsJSON, strings.Trim(oStr, "[]"), sStr, sStr)
+	// Добавлен Observatory + leastPing + warp rules dynamic
+	cfg := fmt.Sprintf(`{"log":{"loglevel":"warning"},"api":{"tag":"api","services":["HandlerService","StatsService"]},"stats":{},"policy":{"levels":{"0":{"statsUserUplink":true,"statsUserDownlink":true}}},"inbounds":[{"tag":"api-in","port":10085,"listen":"127.0.0.1","protocol":"dokodemo-door","settings":{"address":"127.0.0.1"}},{"tag":"client-in","port":443,"protocol":"vless","settings":{"clients":%s,"decryption":"none","fallbacks":[{"dest":80}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"show":false,"dest":"%s:443","serverNames":["%s"],"privateKey":"%s","shortIds":["%s"]}}},{"tag":"client-xh","port":8001,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":%s,"decryption":"none"},"streamSettings":{"network":"xhttp","security":"none","xhttpSettings":{"path":"/xtcp","mode":"auto"}}}],"outbounds":[%s,{"tag":"direct","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],"observatory":{"subjectSelector":[%s],"probeUrl":"https://www.google.com/generate_204","probeInterval":"1m","enableConcurrency":true},"routing":{"domainStrategy":"IPIfNonMatch","balancers":[{"tag":"eu-balancer","selector":[%s],"strategy":{"type":"leastPing"}}],"rules":[{"type":"field","inboundTag":["api-in"],"outboundTag":"api"},{"type":"field","inboundTag":["client-in","client-xh"],"balancerTag":"eu-balancer"},{"type":"field","ip":["geoip:private"],"outboundTag":"direct"}]}}`, clientsJSON, state.SNI, state.SNI, pk, sid, clientsJSON, strings.Trim(oStr, "[]"), sStr, sStr)
 
 	ioutil.WriteFile("/usr/local/etc/xray/config.json",[]byte(cfg), 0644)
 	exec.Command("systemctl", "restart", "xray").Run()
@@ -448,7 +490,7 @@ AGENT_EOF
     echo "⏳ Компиляция Мастера и Агента..."
     go mod init vpn-core
     go get github.com/go-telegram-bot-api/telegram-bot-api/v5 modernc.org/sqlite
-    go get github.com/xtls/xray-core@v1.8.8
+    go get github.com/xtls/xray-core@latest
     
     go build -ldflags="-s -w" -o /usr/local/bin/vpn-master master.go
     
@@ -466,45 +508,43 @@ WorkingDirectory=/etc/orchestrator
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload && systemctl enable vpn-master && systemctl restart vpn-master
-    
     echo "✅ Мастер установлен!"
 }
 
 # ==============================================================================
-# 2. УСТАНОВИТЬ ЛОКАЛЬНЫЙ RU-МОСТ (НА МАСТЕРЕ)
+# UTILS (SSH Alerts, Hardening, Local Bridge)
 # ==============================================================================
 install_local_bridge() {
-    echo -e "\n🏠 УСТАНОВКА ЛОКАЛЬНОГО RU-МОСТА"
     DOMAIN=$(grep "SUB_DOMAIN" /etc/orchestrator/config.env | cut -d'"' -f2)
-    API="https://$DOMAIN"
-    
-    echo "⏳ Запуск агента и Xray..."
-    curl -sL $API/install/bridge | bash -s -- $DOMAIN
-    echo "✅ Локальный мост активен!"
+    curl -sL https://$DOMAIN/install/bridge | bash -s -- $DOMAIN
 }
 
-# ==============================================================================
-# 3. UTILITIES (HARDENING, BACKUP)
-# ==============================================================================
-harden_system() {
-    echo "🛡️ УСИЛЕНИЕ БЕЗОПАСНОСТИ"
-    if free | awk '/^Swap:/ {exit !$2}'; then echo "✅ SWAP уже есть!"; else
-        fallocate -l 2G /swapfile; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
-        echo "/swapfile none swap sw 0 0" >> /etc/fstab; echo "✅ SWAP создан!"
-    fi
-    apt-get install -yq fail2ban >/dev/null 2>&1
-    echo -e "[sshd]\nenabled=true\nport=1:65535\nmaxretry=5\nbantime=24h" > /etc/fail2ban/jail.local
-    systemctl restart fail2ban; echo "✅ Fail2Ban включен."
-}
-
-create_backup() {
+setup_ssh_alerts() {
     TG_TOKEN=$(grep "TG_TOKEN" /etc/orchestrator/config.env | cut -d'"' -f2)
     TG_CHAT=$(grep "TG_CHAT_ID" /etc/orchestrator/config.env | cut -d'"' -f2)
+    if[ -z "$TG_TOKEN" ]; then echo "❌ Токен не найден в конфиге."; return; fi
     
-    tar -czf /tmp/backup.tar.gz /etc/orchestrator/core.db /etc/orchestrator/config.env
-    curl -s -F chat_id="$TG_CHAT" -F document=@"/tmp/backup.tar.gz" -F caption="Backup API" "https://api.telegram.org/bot$TG_TOKEN/sendDocument" >/dev/null
-    rm -f /tmp/backup.tar.gz
-    echo "✅ Бекап отправлен в Telegram!"
+    cat <<EOF > /etc/profile.d/tg_ssh_notify.sh
+#!/bin/bash
+if [ -n "\$SSH_CLIENT" ]; then
+    IP=\$(echo "\$SSH_CLIENT" | awk '{print \$1}')
+    curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" -d chat_id="$TG_CHAT" -d text="🚨 Вход по SSH на \$(hostname) с IP \$IP" >/dev/null 2>&1 &
+fi
+EOF
+    chmod +x /etc/profile.d/tg_ssh_notify.sh
+    echo "✅ Уведомления об SSH входах включены!"
+}
+
+toggle_autostart() {
+    BASHRC="$HOME/.bashrc"
+    SCRIPT_PATH=$(readlink -f "$0")
+    if grep -q "# VPN_AUTOSTART" "$BASHRC" 2>/dev/null; then
+        grep -v "# VPN_AUTOSTART" "$BASHRC" > "${BASHRC}.tmp" && mv "${BASHRC}.tmp" "$BASHRC"
+        echo "🔴 Автозапуск меню при входе отключен."
+    else
+        echo "[[ \$- == *i* ]] && bash \"$SCRIPT_PATH\" # VPN_AUTOSTART" >> "$BASHRC"
+        echo "🟢 Автозапуск меню включен."
+    fi
 }
 
 # ==============================================================================
@@ -513,7 +553,7 @@ create_backup() {
 while true; do
     clear
     API="https://$(grep SUB_DOMAIN /etc/orchestrator/config.env 2>/dev/null | cut -d'"' -f2)"
-    echo "🧠 CLOUD NATIVE ORCHESTRATOR v10.0 Enterprise"
+    echo "🧠 CLOUD NATIVE ORCHESTRATOR v11.0"
     echo "-----------------------------------"
     if[ ! -f /usr/local/bin/vpn-master ]; then
         echo "1. 🛠 Установить Master API"
@@ -523,8 +563,8 @@ while true; do
         echo "4. 🇪🇺 Показать команду для EU-Ноды (+WARP)"
     fi
     echo "-----------------------------------"
-    echo "5. 🛡️ Усилить безопасность (Swap, Fail2ban)"
-    echo "6. 📦 Сделать бекап базы в Telegram"
+    echo "5. 🔔 Включить SSH-алерты в Telegram"
+    echo "6. ⚙️ Вкл/Выкл автозапуск этого меню"
     echo "0. Выход"
     echo "-----------------------------------"
     read -p "Выбор: " C
@@ -533,8 +573,8 @@ while true; do
         2) install_local_bridge ; read -p "Enter..." ;;
         3) echo -e "\n👉 Выполни на новом RU-сервере:\ncurl -sL $API/install/bridge | bash -s -- твой-домен.ru\n"; read -p "Enter..." ;;
         4) echo -e "\n👉 Выполни на новом EU-сервере:\ncurl -sL $API/install/eu | bash\n"; read -p "Enter..." ;;
-        5) harden_system ; read -p "Enter..." ;;
-        6) create_backup ; read -p "Enter..." ;;
+        5) setup_ssh_alerts ; read -p "Enter..." ;;
+        6) toggle_autostart ; read -p "Enter..." ;;
         0) exit 0 ;;
     esac
 done
