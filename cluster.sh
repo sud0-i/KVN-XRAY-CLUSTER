@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# 🚀 VPN CLOUD NATIVE v16.0 Enterprise (Safe JSON, Auto-Setup, Legacy Tools)
+# 🚀 VPN CLOUD NATIVE v17.0 FINAL (Safe JSON, Limits, Regex, MTProto, Timeouts)
 # ==============================================================================
 
 export DEBIAN_FRONTEND=noninteractive
@@ -10,7 +10,7 @@ MASTER_IP=$(curl -s4 ifconfig.me)
 install_deps() {
     echo "⏳ Проверка и установка пакетов ОС..."
     apt-get update -q >/dev/null 2>&1
-    apt-get install -yq jq sqlite3 curl openssl git build-essential nginx certbot python3-certbot-nginx ufw uuid-runtime fail2ban tar sshpass dnsutils iperf3 >/dev/null 2>&1
+    apt-get install -yq jq sqlite3 curl openssl git build-essential nginx certbot python3-certbot-nginx ufw uuid-runtime fail2ban tar sshpass dnsutils iperf3 docker.io >/dev/null 2>&1
     
     if ! command -v go &> /dev/null; then
         echo "⏳ Установка компилятора Go..."
@@ -21,9 +21,6 @@ install_deps() {
     fi
 }
 
-# ==============================================================================
-# ВЕРНУВШИЕСЯ УТИЛИТЫ ИЗ V1
-# ==============================================================================
 show_system_status() {
     local CPU=$(top -bn1 | grep load | awk '{printf "%.2f", $(NF-2)}')
     local RAM=$(free -m | awk 'NR==2{printf "%s/%sMB (%.2f%%)", $3,$2,$3*100/$2 }')
@@ -38,173 +35,32 @@ show_system_status() {
     echo "---------------------------------------------------------"
 }
 
-update_xray_core() {
-    echo -e "\n🔄 ОБНОВЛЕНИЕ XRAY-CORE (Zero-Downtime)"
-    echo "⏳ Обновление на Мастере / Локальном мосте..."
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
-    systemctl restart xray 2>/dev/null
+manage_mtproto() {
+    echo -e "\n✈️ УПРАВЛЕНИЕ MTPROTO PROXY (Telegram)"
+    echo "1) 🚀 Установить / Показать ссылку"
+    echo "2) 🛑 Удалить прокси"
+    echo "0) ↩️ Назад"
+    read -p "Выбор: " M_ACT
 
-    echo "⏳ Рассылка команды обновления на удаленные узлы..."
-    # Собираем все IP адреса мостов и нод
-    local IPS=$(sqlite3 /etc/orchestrator/core.db "SELECT ip FROM bridges WHERE ip != '127.0.0.1' UNION SELECT ip FROM exits;")
-    
-    for IP in $IPS; do
-        echo "   🚀 Обновляю ядро на $IP..."
-        ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP 'bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1 && systemctl restart xray' < /dev/null
-    done
-    echo "✅ Все ядра Xray в кластере успешно обновлены до последней версии!"
-    read -p "Нажми Enter..."
-}
-
-manage_warp_cli() {
-    echo -e "\n🚀 НАСТРОЙКА МАРШРУТИЗАЦИИ WARP (Cloudflare)"
-    echo "Текущие домены WARP:"
-    sqlite3 /etc/orchestrator/core.db "SELECT val FROM settings WHERE key='warp_domains';"
-    echo "---------------------------------------------------------"
-    echo "1) 🌍 Вернуть стандартные домены (Google, ChatGPT, Meta и др.)"
-    echo "2) 🚫 Отключить WARP (весь трафик пойдет напрямую с EU-IP)"
-    echo "3) ✏️ Задать свои домены вручную"
-    echo "0) Отмена"
-    read -p "Выбор: " W_C
-    if [ "$W_C" == "1" ]; then
-        sqlite3 /etc/orchestrator/core.db "UPDATE settings SET val='\"geosite:google\",\"geosite:openai\",\"geosite:netflix\",\"geosite:instagram\",\"domain:chatgpt.com\"' WHERE key='warp_domains';"
-        echo "✅ Домены WARP восстановлены."
-    elif [ "$W_C" == "2" ]; then
-        sqlite3 /etc/orchestrator/core.db "UPDATE settings SET val='' WHERE key='warp_domains';"
-        echo "✅ WARP отключен. Весь трафик идет напрямую."
-    elif [ "$W_C" == "3" ]; then
-        echo "Введи домены через запятую (например: \"geosite:google\",\"domain:ipinfo.io\"):"
-        read -p "> " NEW_WARP
-        sqlite3 /etc/orchestrator/core.db "UPDATE settings SET val='$NEW_WARP' WHERE key='warp_domains';"
-        echo "✅ Домены WARP обновлены!"
+    if [ "$M_ACT" == "1" ]; then
+        echo "⏳ Настройка MTProto Proxy (FakeTLS)..."
+        if ! docker ps | grep -q mtproto-vpn; then
+            SECRET=$(docker run --rm nineseconds/mtg:2 generate-secret tls -c google.com)
+            docker run -d --name mtproto-vpn --restart unless-stopped -p 8443:3128 nineseconds/mtg:2 simple-run -n 1.1.1.1 $SECRET >/dev/null 2>&1
+            ufw allow 8443/tcp >/dev/null 2>&1
+        else
+            SECRET=$(docker inspect mtproto-vpn | grep -o 'simple-run -n 1.1.1.1 .*"' | cut -d' ' -f4 | tr -d '"')
+        fi
+        MY_IP=$(curl -s4 ifconfig.me)
+        echo -e "\n✅ MTProto Прокси активен! Ссылка для подключения:\n"
+        echo "tg://proxy?server=$MY_IP&port=8443&secret=$SECRET"
+        echo ""
+    elif [ "$M_ACT" == "2" ]; then
+        docker rm -f mtproto-vpn >/dev/null 2>&1
+        ufw delete allow 8443/tcp >/dev/null 2>&1
+        echo "✅ MTProto прокси удален."
     fi
     read -n 1 -s -r -p "Нажми любую клавишу..."
-}
-
-change_sni_cli() {
-    echo -e "\n🎭 СМЕНА SNI (Маскировки)"
-    echo "1) Изменить ГЛОБАЛЬНЫЙ SNI (по умолчанию)"
-    echo "2) Изменить SNI для КОНКРЕТНОЙ EU-ноды"
-    read -p "Выбор: " SNI_OPT
-
-    if [ "$SNI_OPT" == "1" ]; then
-        read -p "Новый глобальный SNI (напр. www.samsung.com): " NEW_SNI
-        sqlite3 /etc/orchestrator/core.db "UPDATE settings SET val='$NEW_SNI' WHERE key='sni';"
-        echo "✅ Глобальный SNI обновлен!"
-    elif [ "$SNI_OPT" == "2" ]; then
-        sqlite3 /etc/orchestrator/core.db "SELECT ip, sni FROM exits;" | awk -F'|' '{printf "🌍 IP: %-15s | Текущий кастомный SNI: %s\n", $1, $2}'
-        read -p "Введи IP ноды: " NODE_IP
-        read -p "Новый SNI для этой ноды: " NEW_SNI
-        sqlite3 /etc/orchestrator/core.db "UPDATE exits SET sni='$NEW_SNI' WHERE ip='$NODE_IP';"
-        echo "✅ SNI для $NODE_IP обновлен!"
-    fi
-    read -n 1 -s -r -p "Нажми любую клавишу..."
-}
-
-verify_dns_propagation() {
-    local DOM_TO_CHECK=$1
-    local REAL_IP=$(curl -s4 ifconfig.me)
-    echo -e "\n🌍 Проверка DNS: привязка $DOM_TO_CHECK к $REAL_IP..."
-    
-    while true; do
-        local RESOLVED_IP=$(dig +short "$DOM_TO_CHECK" | tail -n1)
-        if [ "$RESOLVED_IP" == "$REAL_IP" ]; then
-            echo "✅ Отлично! DNS-записи обновлены, домен указывает на этот сервер."
-            return 0
-        fi
-        
-        echo "⚠️ ВНИМАНИЕ: Домен $DOM_TO_CHECK сейчас указывает на IP: ${RESOLVED_IP:-"Нет записи (пусто)"}"
-        echo "👉 Зайди в панель регистратора домена и измени A-запись на: $REAL_IP"
-        echo "---------------------------------------------------------"
-        echo "1) 🔄 Проверить DNS еще раз (нажми после смены записи)"
-        echo "2) ⏭️ Пропустить проверку (Например, если домен за Cloudflare Proxy)"
-        read -p "Твой выбор (1-2): " DNS_CHOICE
-        
-        if [ "$DNS_CHOICE" == "2" ]; then
-            echo "⚠️ Проверка пропущена. Убедись, что клиенты и Let's Encrypt смогут достучаться!"
-            return 0
-        fi
-        sleep 2
-    done
-}
-
-setup_ssh_notify() {
-    echo -e "\n🔔 НАСТРОЙКА УВЕДОМЛЕНИЙ ОБ SSH-ВХОДАХ"
-    local TG_TOKEN=$(grep TG_TOKEN /etc/orchestrator/config.env 2>/dev/null | cut -d'"' -f2)
-    local TG_CHAT_ID=$(grep TG_CHAT_ID /etc/orchestrator/config.env 2>/dev/null | cut -d'"' -f2)
-    
-    if [ -z "$TG_TOKEN" ]; then
-        echo "⚠️ Сначала установите Мастер, чтобы задать Токен и Chat ID."
-        return
-    fi
-
-    cat <<EOF > /etc/profile.d/tg_ssh_notify.sh
-#!/bin/bash
-if [ -n "\$SSH_CLIENT" ]; then
-    IP=\$(echo "\$SSH_CLIENT" | awk '{print \$1}')
-    HOSTNAME=\$(hostname)
-    MSG="🚨 *ВНИМАНИЕ! Вход по SSH*%0A%0A🖥 *Сервер:* \$HOSTNAME%0A👤 *Пользователь:* \$USER%0A🌐 *IP адрес:* \$IP%0A⏰ *Время:* \$(date '+%Y-%m-%d %H:%M:%S')"
-    curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" -d chat_id="${TG_CHAT_ID}" -d text="\$MSG" -d parse_mode="Markdown" >/dev/null 2>&1 &
-fi
-EOF
-    chmod +x /etc/profile.d/tg_ssh_notify.sh
-    echo "✅ Уведомления включены! Теперь бот будет присылать алерт при каждом входе."
-}
-
-toggle_autostart() {
-    echo -e "\n⚙️ НАСТРОЙКА АВТОЗАПУСКА ПРИ ВХОДЕ ПО SSH"
-    local BASHRC="$HOME/.bashrc"
-    local SCRIPT_PATH=$(readlink -f "$0")
-    local MARKER="# VPN_BRIDGE_AUTOSTART"
-    local AUTOSTART_LINE="[[ \$- == *i* ]] && bash \"$SCRIPT_PATH\" $MARKER"
-
-    if grep -q "$MARKER" "$BASHRC" 2>/dev/null; then
-        grep -v "$MARKER" "$BASHRC" > "${BASHRC}.tmp" && mv "${BASHRC}.tmp" "$BASHRC"
-        echo "🔴 Автозапуск ОТКЛЮЧЕН. При входе по SSH будет открываться обычная консоль."
-    else
-        echo "$AUTOSTART_LINE" >> "$BASHRC"
-        echo "🟢 Автозапуск ВКЛЮЧЕН. Меню будет появляться сразу при подключении к серверу."
-    fi
-}
-
-show_logs() {
-    echo "📜 ПРОСМОТР ЛОГОВ (Последние 30 строк)"
-    echo "1) Мастер (vpn-master)"
-    echo "2) Агент (vpn-agent)"
-    echo "3) Nginx (Веб-сервер)"
-    echo "4) Xray (Ядро)"
-    read -p "Выбор: " L_C
-    echo "---------------------------------------------------------"
-    case $L_C in
-        1) journalctl -u vpn-master -n 30 --no-pager ;;
-        2) journalctl -u vpn-agent -n 30 --no-pager ;;
-        3) tail -n 30 /var/log/nginx/error.log 2>/dev/null || echo "Ошибок Nginx нет." ;;
-        4) journalctl -u xray -n 30 --no-pager ;;
-        *) echo "Отмена." ;;
-    esac
-}
-
-speedtest_bridge() {
-    echo -e "\n⚡ ЗАМЕР СКОРОСТИ МЕЖДУ RU И EU (iperf3)"
-    local IPS=$(sqlite3 /etc/orchestrator/core.db "SELECT ip FROM exits;" 2>/dev/null)
-    if [ -z "$IPS" ]; then echo "❌ Нет подключенных EU-серверов в БД."; return; fi
-    
-    apt-get install -yq iperf3 >/dev/null 2>&1
-
-    for IP in $IPS; do
-        echo "---------------------------------------------------------"
-        echo "🌐 Настраиваю EU-ноду ($IP) для теста..."
-        ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP "apt-get install -yq iperf3 >/dev/null 2>&1 && ufw allow 5201/tcp >/dev/null 2>&1 && killall iperf3 2>/dev/null; iperf3 -s -D" < /dev/null
-        
-        echo "🚀 Тест 1/2: Скачивание (EU -> RU)..."
-        iperf3 -c "$IP" -O 1 -t 5 -R | grep -E "sender|receiver"
-        
-        echo "🚀 Тест 2/2: Загрузка (RU -> EU)..."
-        iperf3 -c "$IP" -O 1 -t 5 | grep -E "sender|receiver"
-        
-        echo "🧹 Уборка на EU-ноде..."
-        ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP "killall iperf3 2>/dev/null && ufw delete allow 5201/tcp >/dev/null 2>&1" < /dev/null
-    done
 }
 
 # ==============================================================================
@@ -214,7 +70,7 @@ compile_code() {
     mkdir -p /usr/src/vpn-cluster && cd /usr/src/vpn-cluster
 
     # =========================================================================
-    # MASTER GO CODE (BOT с кнопками, Подписки, Лимиты IP)
+    # MASTER GO CODE
     # =========================================================================
     cat << 'MASTER_EOF' > master.go
 package main
@@ -241,23 +97,23 @@ var cfg struct{ Token, ChatID, Domain, ClusterToken, BridgeUUID, MasterIP string
 
 func initDB() {
 	db, _ = sql.Open("sqlite", "/etc/orchestrator/core.db?_pragma=journal_mode(WAL)")
-	db.Exec(`CREATE TABLE IF NOT EXISTS users (uuid TEXT PRIMARY KEY, name TEXT, traffic_up INT DEFAULT 0, traffic_down INT DEFAULT 0, expires_at DATETIME DEFAULT (datetime('now', '+30 days')), ip_limit INT DEFAULT 2, chat_id TEXT DEFAULT '')`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS users (uuid TEXT PRIMARY KEY, name TEXT, traffic_up INT DEFAULT 0, traffic_down INT DEFAULT 0, expires_at DATETIME DEFAULT (datetime('now', '+30 days')), ip_limit INT DEFAULT 5, chat_id TEXT DEFAULT '')`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, ip_limit INT DEFAULT 5)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS bridges (ip TEXT PRIMARY KEY, domain TEXT, pub_key TEXT, sid TEXT, mode TEXT, last_seen DATETIME)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS exits (ip TEXT PRIMARY KEY, pub_key TEXT, ss_pass TEXT, xhttp_path TEXT, sni TEXT DEFAULT '', last_seen DATETIME)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, val TEXT)`)
 	
-	// ФИКС SQLITE: Сначала добавляем пустую колонку, затем апдейтим (обход запрета на функции в DEFAULT)
 	db.Exec(`ALTER TABLE users ADD COLUMN expires_at DATETIME`)
 	db.Exec(`UPDATE users SET expires_at=datetime('now', '+30 days') WHERE expires_at IS NULL`)
 	
-	db.Exec(`ALTER TABLE users ADD COLUMN ip_limit INT DEFAULT 2`)
+	db.Exec(`ALTER TABLE users ADD COLUMN ip_limit INT DEFAULT 5`)
+	db.Exec(`ALTER TABLE invites ADD COLUMN ip_limit INT DEFAULT 5`)
 	db.Exec(`ALTER TABLE users ADD COLUMN chat_id TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE exits ADD COLUMN sni TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE exits ADD COLUMN last_seen DATETIME`)
 
 	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('sni', 'www.microsoft.com')`)
-	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('warp_domains', '"geosite:google","geosite:openai","geosite:netflix","geosite:instagram"')`)
+	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('warp_domains', '"geosite:google","geosite:openai","geosite:netflix","geosite:instagram","geosite:category-ru","domain:ru","domain:рф"')`)
 }
 
 func loadConfig() {
@@ -283,7 +139,6 @@ func authMw(next http.HandlerFunc) http.HandlerFunc {
 func handleSync(w http.ResponseWriter, r *http.Request) {
 	nodeIP := r.Header.Get("X-Real-IP")
 	if nodeIP == "" || nodeIP == "::1" { nodeIP = "127.0.0.1" }
-	
 	db.Exec("UPDATE bridges SET last_seen=CURRENT_TIMESTAMP WHERE ip=?", nodeIP)
 	db.Exec("UPDATE exits SET last_seen=CURRENT_TIMESTAMP WHERE ip=?", nodeIP)
 
@@ -292,7 +147,7 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT val FROM settings WHERE key='warp_domains'").Scan(&warp)
 
 	users := []map[string]interface{}{}
-	uRows, _ := db.Query("SELECT uuid, name, IFNULL(ip_limit, 2) FROM users WHERE expires_at > CURRENT_TIMESTAMP OR expires_at IS NULL")
+	uRows, _ := db.Query("SELECT uuid, name, IFNULL(ip_limit, 5) FROM users WHERE expires_at > CURRENT_TIMESTAMP OR expires_at IS NULL")
 	for uRows.Next() {
 		var u, n string; var lim int; uRows.Scan(&u, &n, &lim)
 		users = append(users, map[string]interface{}{"uuid": u, "email": n, "ip_limit": lim})
@@ -325,7 +180,7 @@ func handleBan(w http.ResponseWriter, r *http.Request) {
 		db.Exec("UPDATE users SET expires_at=datetime('now', '-1 days') WHERE name=?", email)
 		if cfg.Token != "" {
 			bot, _ := tgbotapi.NewBotAPI(cfg.Token)
-			msg := tgbotapi.NewMessageToChannel(cfg.ChatID, fmt.Sprintf("🚨 <b>Сработал Анти-фрод!</b>\nПользователь <code>%s</code> заблокирован за использование более 2-х устройств.", email))
+			msg := tgbotapi.NewMessageToChannel(cfg.ChatID, fmt.Sprintf("🚨 <b>Сработал Анти-фрод!</b>\nПользователь <code>%s</code> заблокирован за использование с большего числа IP, чем разрешено лимитом.", email))
 			msg.ParseMode = "HTML"; bot.Send(msg)
 		}
 	}
@@ -414,10 +269,13 @@ func main() {
 					code := strings.TrimPrefix(data, "del_inv:")
 					db.Exec("DELETE FROM invites WHERE code=?", code)
 					bot.Request(tgbotapi.NewCallbackWithAlert(update.CallbackQuery.ID, "✅ Инвайт удален!"))
-				} else if data == "new_inv" {
+				} else if strings.HasPrefix(data, "new_inv_") {
+					limit := 5
+					if data == "new_inv_0" { limit = 0 }
 					b := make([]byte, 4); rand.Read(b); code := "INV-" + strings.ToUpper(hex.EncodeToString(b))
-					db.Exec("INSERT INTO invites (code) VALUES (?)", code)
-					msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ <b>Новый Инвайт:</b> <code>%s</code>\n🔗 Перешли юзеру:\nhttps://t.me/%s?start=%s", code, bot.Self.UserName, code))
+					db.Exec("INSERT INTO invites (code, ip_limit) VALUES (?, ?)", code, limit)
+					limTxt := "5 устройств"; if limit == 0 { limTxt = "Безлимит" }
+					msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ <b>Новый Инвайт (%s):</b> <code>%s</code>\n🔗 Перешли юзеру:\nhttps://t.me/%s?start=%s", limTxt, code, bot.Self.UserName, code))
 					msg.ParseMode = "HTML"; bot.Send(msg)
 					bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Создано!"))
 				} else if data == "backup" {
@@ -462,7 +320,7 @@ func main() {
 			if isAdmin {
 				msg := tgbotapi.NewMessage(chatID, "")
 				if txt == "/start" || txt == "/menu" {
-					msg.Text = "🧠 Master API v17.2"; msg.ReplyMarkup = mainKB
+					msg.Text = "🧠 Master API v17.0 Final"; msg.ReplyMarkup = mainKB
 				} else if txt == "📊 Статус" {
 					var bC, eC int
 					db.QueryRow("SELECT COUNT(*) FROM bridges WHERE last_seen > datetime('now', '-5 minute')").Scan(&bC)
@@ -473,35 +331,38 @@ func main() {
 					msg.Text = fmt.Sprintf("🌐 <b>Инфраструктура:</b>\n\n🇷🇺 Активных мостов: <b>%d</b>\n🇪🇺 EU-нод: <b>%d</b>\n\n🎭 SNI: <code>%s</code>\n🚀 WARP: <code>%s</code>", bC, eC, sni, warp)
 					msg.ParseMode = "HTML"
 				} else if txt == "🎫 Инвайты" {
-					rows, _ := db.Query("SELECT code FROM invites")
+					rows, _ := db.Query("SELECT code, IFNULL(ip_limit, 5) FROM invites")
 					var btns [][]tgbotapi.InlineKeyboardButton
 					count := 0
 					for rows.Next() {
 						count++
-						var c string; rows.Scan(&c)
-						btns = append(btns, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("❌ Уд. "+c, "del_inv:"+c)))
+						var c string; var l int; rows.Scan(&c, &l)
+						btns = append(btns, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("❌ Уд. %s (Lim: %d)", c, l), "del_inv:"+c)))
 					}
 					rows.Close()
-					btns = append(btns, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("➕ Создать инвайт", "new_inv")))
+					btns = append(btns, tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("➕ Инвайт (5 IP)", "new_inv_5"),
+						tgbotapi.NewInlineKeyboardButtonData("➕ Инвайт (Безлимит)", "new_inv_0"),
+					))
 					msg.Text = fmt.Sprintf("🎫 <b>Активные инвайты:</b> %d шт.\nНажми кнопку ниже, чтобы создать новый.", count)
 					msg.ParseMode = "HTML"
 					msg.ReplyMarkup = tgbotapi.InlineKeyboardMarkup{InlineKeyboard: btns}
 				} else if txt == "👥 Юзеры" {
-					// ДОБАВЛЕНА ЯВНАЯ ОБРАБОТКА ОШИБОК SQL
-					rows, err := db.Query("SELECT uuid, name, traffic_down, expires_at FROM users")
+					rows, err := db.Query("SELECT uuid, name, traffic_down, expires_at, IFNULL(ip_limit, 5) FROM users")
 					if err != nil {
 						msg.Text = "❌ Ошибка чтения БД: " + err.Error()
 					} else {
 						count := 0
 						for rows.Next() { 
 							count++
-							var id, n string; var d sql.NullInt64; var exp sql.NullString
-							rows.Scan(&id, &n, &d, &exp)
+							var id, n string; var d sql.NullInt64; var exp sql.NullString; var lim int
+							rows.Scan(&id, &n, &d, &exp, &lim)
 							
 							down := int64(0); if d.Valid { down = d.Int64 }
 							expStr := "Безлимит"; if exp.Valid && exp.String != "" { expStr = exp.String }
+							limStr := "Безлимит"; if lim > 0 { limStr = fmt.Sprintf("%d IP", lim) }
 							
-							uMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("👤 <b>%s</b>\n🔽 %.2f GB | ⏳ До: %s\n🔗 <code>https://%s/sub/%s.html</code>", n, float64(down)/1073741824, expStr, cfg.Domain, id))
+							uMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("👤 <b>%s</b> (%s)\n🔽 %.2f GB | ⏳ До: %s\n🔗 <code>https://%s/sub/%s.html</code>", n, limStr, float64(down)/1073741824, expStr, cfg.Domain, id))
 							uMsg.ParseMode = "HTML"
 							uMsg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 								tgbotapi.NewInlineKeyboardRow(
@@ -549,23 +410,19 @@ func main() {
 			// --- РЕГИСТРАЦИЯ ПО ИНВАЙТУ ---
 			if strings.HasPrefix(txt, "/start INV-") {
 				code := strings.TrimPrefix(txt, "/start ")
-				var ex int
-				if db.QueryRow("SELECT 1 FROM invites WHERE code=?", code).Scan(&ex) == nil {
-					// 1. Генерируем НАСТОЯЩИЙ UUID V4 для Xray
+				var lim int
+				if db.QueryRow("SELECT IFNULL(ip_limit, 5) FROM invites WHERE code=?", code).Scan(&lim) == nil {
 					b := make([]byte, 16); rand.Read(b); b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80
 					uuid := fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 					
-					// 2. Берем Имя (даже если нет @username)
 					name := update.Message.From.UserName
 					if name == "" { name = update.Message.From.FirstName } 
 					name = strings.ReplaceAll(name, " ", "_") 
 					if name == "" { name = fmt.Sprintf("user_%d", chatID) }
 					
-					// 3. Сохраняем в базу с привязкой chat_id
-					db.Exec("INSERT INTO users (uuid, name, chat_id) VALUES (?, ?, ?)", uuid, name, fmt.Sprintf("%d", chatID))
+					db.Exec("INSERT INTO users (uuid, name, chat_id, ip_limit) VALUES (?, ?, ?, ?)", uuid, name, fmt.Sprintf("%d", chatID), lim)
 					db.Exec("DELETE FROM invites WHERE code=?", code)
 					
-					// 4. Отвечаем
 					msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Профиль создан! Тебе дано 30 дней.\n\n👇 Ссылка:\nhttps://%s/sub/%s.html", cfg.Domain, uuid))
 					if !isAdmin { msg.ReplyMarkup = userKB }
 					bot.Send(msg)
@@ -577,7 +434,7 @@ func main() {
 MASTER_EOF
 
     # =========================================================================
-    # AGENT GO CODE (Safe JSON + IP Limits + Node SNI)
+    # AGENT GO CODE (Safe JSON + Safe Limits Regex + Timeouts)
     # =========================================================================
     cat << 'AGENT_EOF' > agent.go
 package main
@@ -596,6 +453,8 @@ import (
 	"strings"
 	"time"
 	"crypto/sha256"
+	"sync"
+	"regexp"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -609,6 +468,8 @@ import (
 var (
 	masterURL, token, role, lastHash string
 	knownUsers = make(map[string]string)
+	userLimits = make(map[string]int) // Хранит лимит для каждого email (0 = безлимит)
+	limitsMu   sync.RWMutex
 )
 
 type State struct {
@@ -620,10 +481,11 @@ type State struct {
 }
 
 func syncWithMaster() {
+	client := &http.Client{Timeout: 5 * time.Second} // Защита от зависания
 	req, _ := http.NewRequest("GET", masterURL+"/api/sync", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Node-IP", "PING")
-	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 { return }
 	defer resp.Body.Close()
 
@@ -631,6 +493,16 @@ func syncWithMaster() {
 	eJSON, _ := json.Marshal(state.Exits)
 	cHash := fmt.Sprintf("%x", sha256.Sum256([]byte(string(eJSON)+state.SNI+state.WarpDomains)))
 	
+	// Обновляем лимиты пользователей
+	newLimits := make(map[string]int)
+	for _, u := range state.Users {
+		email := u["email"].(string)
+		if limit, ok := u["ip_limit"].(float64); ok { newLimits[email] = int(limit) } else { newLimits[email] = 5 }
+	}
+	limitsMu.Lock()
+	userLimits = newLimits
+	limitsMu.Unlock()
+
 	if cHash != lastHash {
 		if role == "eu" { buildEUConfigSafe(state) } else { buildRUConfigSafe(state) }
 		lastHash = cHash
@@ -655,7 +527,8 @@ func syncWithMaster() {
 
 // SAFE EU JSON GENERATOR
 func buildEUConfigSafe(state State) {
-	keys, _ := ioutil.ReadFile("/usr/local/etc/xray/agent_keys.txt")
+	keys, err := ioutil.ReadFile("/usr/local/etc/xray/agent_keys.txt")
+	if err != nil { return } // Защита от паники
 	p := strings.Split(strings.TrimSpace(string(keys)), "|")
 	if len(p) < 3 { return }
 	pk, ss, xp := p[0], p[1], p[2]
@@ -703,7 +576,8 @@ func buildEUConfigSafe(state State) {
 
 // SAFE RU JSON GENERATOR
 func buildRUConfigSafe(state State) {
-	keys, _ := ioutil.ReadFile("/usr/local/etc/xray/agent_keys.txt")
+	keys, err := ioutil.ReadFile("/usr/local/etc/xray/agent_keys.txt")
+	if err != nil { return }
 	p := strings.Split(strings.TrimSpace(string(keys)), "|")
 	mode, pk, sid, tlsDomain := "reality", "", "", ""
 	if len(p) >= 2 && p[0] == "tls" { mode, tlsDomain = "tls", p[1] } else if len(p) >= 2 { pk, sid = p[0], p[1] }
@@ -793,10 +667,13 @@ func buildRUConfigSafe(state State) {
 	exec.Command("systemctl", "restart", "xray").Run()
 }
 
-// АНТИ-НАХЛЕБНИК: МОНИТОРИНГ Access.log
+// АНТИ-НАХЛЕБНИК: БЕЗОПАСНЫЙ ПАРСИНГ ЛОГОВ (Regex)
 func monitorIPLimits() {
 	if role != "ru" { return }
 	activeIPs := make(map[string]map[string]time.Time)
+	
+	emailRegex := regexp.MustCompile(`email:\s*([^ ]+)`)
+	ipRegex := regexp.MustCompile(`from\s+([0-9\.]+):`)
 	
 	go func() {
 		time.Sleep(5 * time.Second)
@@ -804,11 +681,12 @@ func monitorIPLimits() {
 		file.Seek(0, 2); reader := bufio.NewReader(file)
 		for {
 			line, err := reader.ReadString('\n')
-			if err == nil && strings.Contains(line, "accepted") && strings.Contains(line, "email: ") {
-				parts := strings.Split(line, " ")
-				if len(parts) > 3 {
-					ip := strings.Split(parts[2], ":")[0]
-					email := strings.TrimSpace(line[strings.Index(line, "email: ")+7:])
+			if err == nil && strings.Contains(line, "accepted") {
+				eMatch := emailRegex.FindStringSubmatch(line)
+				iMatch := ipRegex.FindStringSubmatch(line)
+				if len(eMatch) > 1 && len(iMatch) > 1 {
+					email := strings.TrimSpace(eMatch[1])
+					ip := strings.TrimSpace(iMatch[1])
 					if activeIPs[email] == nil { activeIPs[email] = make(map[string]time.Time) }
 					activeIPs[email][ip] = time.Now()
 				}
@@ -820,11 +698,18 @@ func monitorIPLimits() {
 		for {
 			time.Sleep(1 * time.Minute); now := time.Now()
 			for email, ips := range activeIPs {
+				// Очистка старых IP
 				for ip, lastSeen := range ips { if now.Sub(lastSeen) > 5*time.Minute { delete(ips, ip) } }
-				if len(ips) > 2 { // ЖЕСТКИЙ ЛИМИТ
+				
+				limitsMu.RLock()
+				limit := userLimits[email]
+				limitsMu.RUnlock()
+
+				// Если limit == 0 (безлимит), пропускаем блокировку
+				if limit > 0 && len(ips) > limit {
 					uuid := knownUsers[email]
 					alterUserXray(uuid, email, true)
-					http.Get(fmt.Sprintf("%s/api/ban?email=%s", masterURL, email))
+					http.Get(fmt.Sprintf("%s/api/ban?email=%s", masterURL, email)) // Отправка сигнала Мастеру
 					delete(activeIPs, email)
 				}
 			}
@@ -865,9 +750,10 @@ func sendStats() {
 	for e, d := range aggr { pl = append(pl, map[string]interface{}{"email": e, "up": d["up"], "down": d["down"]}) }
 	if len(pl) > 0 {
 		b, _ := json.Marshal(pl)
+		client := &http.Client{Timeout: 10 * time.Second} // ЗАЩИТА ОТ ЗАВИСАНИЯ
 		req, _ := http.NewRequest("POST", masterURL+"/api/stats", bytes.NewBuffer(b))
 		req.Header.Set("Authorization", "Bearer "+token)
-		http.DefaultClient.Do(req)
+		client.Do(req)
 	}
 }
 
@@ -878,7 +764,7 @@ func main() {
 }
 AGENT_EOF
 
-    echo "⏳ Компиляция Мастера и Агента v17.0..."
+    echo "⏳ Компиляция Мастера и Агента v17.0 Final..."
     go mod init vpn-core >/dev/null 2>&1
     go get github.com/go-telegram-bot-api/telegram-bot-api/v5 modernc.org/sqlite >/dev/null 2>&1
     go get github.com/xtls/xray-core@latest >/dev/null 2>&1
@@ -891,7 +777,7 @@ AGENT_EOF
 }
 
 update_cluster() {
-    echo -e "\n🔄 БЕСШОВНОЕ ОБНОВЛЕНИЕ КЛАСТЕРА (v16.0)"
+    echo -e "\n🔄 БЕСШОВНОЕ ОБНОВЛЕНИЕ КЛАСТЕРА"
     compile_code
     
     echo "⏳ Перезапуск локального Мастера..."
@@ -911,7 +797,7 @@ update_cluster() {
             ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP "systemctl start vpn-agent" 2>/dev/null
             echo "✅ Мост $IP обновлен."
         else
-            echo "❌ Ошибка обновления моста $IP. Сервер недоступен."
+            echo "❌ Ошибка обновления моста $IP."
         fi
     done
 
@@ -922,7 +808,7 @@ update_cluster() {
             ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP "systemctl start vpn-agent" 2>/dev/null
             echo "✅ Нода $IP обновлена."
         else
-            echo "❌ Ошибка обновления ноды $IP. Сервер недоступен."
+            echo "❌ Ошибка обновления ноды $IP."
         fi
     done
     echo "✅ Кластер успешно обновлен!"
@@ -994,16 +880,11 @@ EOF
     systemctl daemon-reload && systemctl enable vpn-master && systemctl restart vpn-master
     echo "✅ Мастер успешно установлен и запущен!"
     
-    # ИНТЕРАКТИВНОЕ ПРЕДЛОЖЕНИЕ УСТАНОВИТЬ ЛОКАЛЬНЫЙ МОСТ
     echo "---------------------------------------------------------"
-    echo "🚀 Мастер настроен. Чтобы VPN заработал, нужен хотя бы один 'Мост' (Точка входа)."
     read -p "Установить локальный RU-мост на этом же сервере прямо сейчас? (y/n): " SETUP_LOCAL
     if [[ "$SETUP_LOCAL" == "y" || "$SETUP_LOCAL" == "Y" ]]; then
         deploy_node "ru_local"
-    else
-        echo "👌 Ок, вы сможете добавить мосты и ноды позже через главное меню."
     fi
-    echo "---------------------------------------------------------"
 }
 
 # ==============================================================================
@@ -1058,9 +939,8 @@ Restart=always
 WantedBy=multi-user.target
 SVC
         systemctl daemon-reload && systemctl enable vpn-agent && systemctl restart vpn-agent
-        sleep 2
-        systemctl restart xray
-        echo "✅ Локальный мост (Classic TLS) успешно установлен и запущен!"
+        sleep 2; systemctl restart xray
+        echo "✅ Локальный мост успешно установлен!"
         return
     fi
 
@@ -1085,8 +965,9 @@ SVC
         read -s -p "Root пароль от $IP: " PASS; echo ""
     fi
 
-    echo "⏳ Копирование SSH-ключа на удаленный сервер..."
-    sshpass -p "$PASS" ssh-copy-id -i /root/.ssh/vpn_cluster_key.pub -o StrictHostKeyChecking=no root@$IP >/dev/null 2>&1
+    echo "⏳ Копирование SSH-ключа на удаленный сервер (Безопасно)..."
+    export SSHPASS="$PASS"
+    sshpass -e ssh-copy-id -i /root/.ssh/vpn_cluster_key.pub -o StrictHostKeyChecking=no root@$IP >/dev/null 2>&1
     CMD_PREFIX="ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP bash -s"
 
     M_IP=$(curl -s4 ifconfig.me)
@@ -1192,19 +1073,19 @@ EOF
 )
     DATA=$(echo "$RAW_OUT" | grep "NODE_DATA")
     if [ -z "$DATA" ]; then echo "❌ Ошибка деплоя. Лог: $RAW_OUT"
-    else echo "✅ Узел успешно развернут и защищен! Мастер подхватит его через 30 секунд."; fi
+    else echo "✅ Узел успешно развернут! Мастер подхватит его через 30 секунд."; fi
 }
 
 # ==============================================================================
-# УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ И БЕКАПЫ
+# УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ
 # ==============================================================================
 manage_users_cli() {
     while true; do
         clear
         echo "========================================================="
-        echo "👥 УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ (Локально)"
+        echo "👥 УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ"
         echo "========================================================="
-        sqlite3 /etc/orchestrator/core.db "SELECT name, traffic_down, traffic_up, uuid FROM users;" | awk -F'|' '{printf "👤 %-15s | 🔽 %.2f GB | 🔼 %.2f GB | ID: %s\n", $1, $2/1073741824, $3/1073741824, $4}'
+        sqlite3 /etc/orchestrator/core.db "SELECT name, traffic_down, IFNULL(ip_limit, 5), uuid FROM users;" | awk -F'|' '{l="Безлимит"; if($3>0){l=$3" IP"} printf "👤 %-15s | Lim: %-8s | 🔽 %.2f GB | ID: %s\n", $1, l, $2/1073741824, $4}'
         if [ $(sqlite3 /etc/orchestrator/core.db "SELECT COUNT(*) FROM users;") -eq 0 ]; then echo "Пусто. Нет активных пользователей."; fi
         echo "---------------------------------------------------------"
         echo "1) ➕ Добавить пользователя"
@@ -1216,16 +1097,21 @@ manage_users_cli() {
         case $U_OPT in
             1)
                 read -p "Имя (без пробелов, англ): " U_NAME
+                echo "1) Лимит 5 IP (По умолчанию)"
+                echo "2) Безлимитный аккаунт"
+                read -p "Тип аккаунта: " L_TYPE
+                LIMIT=5
+                if [ "$L_TYPE" == "2" ]; then LIMIT=0; fi
                 U_UUID=$(uuidgen)
-                sqlite3 /etc/orchestrator/core.db "INSERT INTO users (uuid, name, expires_at) VALUES ('$U_UUID', '$U_NAME', datetime('now', '+30 days'));"
+                sqlite3 /etc/orchestrator/core.db "INSERT INTO users (uuid, name, expires_at, ip_limit) VALUES ('$U_UUID', '$U_NAME', datetime('now', '+30 days'), $LIMIT);"
                 DOMAIN=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
-                echo "✅ Пользователь добавлен в БД! Агенты применят его через 30 сек."
+                echo "✅ Пользователь добавлен в БД!"
                 echo "🔗 Ссылка: https://$DOMAIN/sub/$U_UUID.html"
                 read -p "Нажми Enter..." ;;
             2)
                 read -p "Введи точное Имя пользователя для удаления: " DEL_NAME
                 sqlite3 /etc/orchestrator/core.db "DELETE FROM users WHERE name='$DEL_NAME';"
-                echo "✅ Пользователь удален из БД! Агенты отключат его через ~30 сек."
+                echo "✅ Пользователь удален из БД!"
                 read -p "Нажми Enter..." ;;
             3)
                 read -p "Введи Имя пользователя: " GET_NAME
@@ -1245,14 +1131,10 @@ manage_users_cli() {
 harden_system() {
     echo "⏳ Настройка безопасности и SWAP..."
     if [ ! -f /swapfile ]; then
-        fallocate -l 2G /swapfile
-        chmod 600 /swapfile
-        mkswap /swapfile >/dev/null
-        swapon /swapfile
+        fallocate -l 2G /swapfile; chmod 600 /swapfile; mkswap /swapfile >/dev/null; swapon /swapfile
         echo '/swapfile none swap sw 0 0' >> /etc/fstab
     fi
-    systemctl enable fail2ban >/dev/null 2>&1
-    systemctl start fail2ban >/dev/null 2>&1
+    systemctl enable fail2ban >/dev/null 2>&1; systemctl start fail2ban >/dev/null 2>&1
     echo "✅ Безопасность усилена (SWAP 2GB, Fail2Ban)."
 }
 
@@ -1260,11 +1142,10 @@ create_backup() {
     TG_TOKEN=$(grep TG_TOKEN /etc/orchestrator/config.env 2>/dev/null | cut -d'"' -f2)
     TG_CHAT_ID=$(grep TG_CHAT_ID /etc/orchestrator/config.env 2>/dev/null | cut -d'"' -f2)
     if [ -z "$TG_TOKEN" ]; then echo "❌ Токен не найден. Сначала установи Мастер."; return; fi
-    
     echo "⏳ Создание бекапа..."
     sqlite3 /etc/orchestrator/core.db ".backup '/tmp/core_backup.db'"
     tar -czf /tmp/backup.tar.gz -C /tmp core_backup.db
-    curl -s -F document=@"/tmp/backup.tar.gz" -F chat_id="$TG_CHAT_ID" -F caption="📦 Бекап БД Кластера v16.0" "https://api.telegram.org/bot$TG_TOKEN/sendDocument" >/dev/null
+    curl -s -F document=@"/tmp/backup.tar.gz" -F chat_id="$TG_CHAT_ID" -F caption="📦 Бекап БД Кластера v17.0 Final" "https://api.telegram.org/bot$TG_TOKEN/sendDocument" >/dev/null
     rm -f /tmp/core_backup.db /tmp/backup.tar.gz
     echo "✅ Бекап отправлен в Telegram!"
 }
@@ -1294,7 +1175,7 @@ delete_node() {
 while true; do
     clear
     echo "#########################################################"
-    echo "🚀 VPN CLOUD NATIVE v17.1.6 | Master Control Panel"
+    echo "🚀 VPN CLOUD NATIVE v17.0 FINAL | Master Control Panel"
     echo "#########################################################"
     show_system_status
     
@@ -1302,25 +1183,25 @@ while true; do
         echo "1. 🛠 Установить Master API"
     else
         echo "🔹 ИНФРАСТРУКТУРА"
-        echo "2. 🏠 Добавить Локальный RU-Мост (127.0.0.1 - TLS)"
-        echo "3. 🌉 Добавить Удаленный RU-Мост (Remote SSH)"
-        echo "4. 🇪🇺 Добавить EU-Ноду (Remote SSH)"
+        echo "2. 🏠 Добавить Локальный RU-Мост"
+        echo "3. 🌉 Добавить Удаленный RU-Мост"
+        echo "4. 🇪🇺 Добавить EU-Ноду (+WARP)"
         echo "5. 🗑️ Удалить узел из кластера"
         
         echo -e "\n🔹 УПРАВЛЕНИЕ И ДИАГНОСТИКА"
         echo "6. 👥 Управление пользователями"
-        echo "7. ⚡ Speedtest: Замер скорости (RU <-> EU)"
-        echo "8. 📜 Просмотр логов (Мастер, Агент, Xray)"
+        echo "7. ⚡ Speedtest: Замер скорости"
+        echo "8. 📜 Просмотр логов"
         
         echo -e "\n🔹 БЕЗОПАСНОСТЬ И ОБСЛУЖИВАНИЕ"
         echo "9.  🛡️ Усилить безопасность (SWAP, Fail2ban)"
-        echo "10. 🔔 Включить SSH-алерты в Telegram"
+        echo "10. ✈️ Telegram MTProto Прокси"
         echo "11. ⚙️ Автозапуск меню при входе"
         echo "12. 📦 Сделать полный бекап в Telegram"
-        echo "13. 🔄 Обновить Мастера и Агентов (Zero-Downtime)"
-		echo "14. 🔄 Обновить Xrya"
-		echo "15. 🔄 сменить SNI"
-		echo "16. 🔄 сменить WARP"
+        echo "13. 🔄 Обновить Мастера и Агентов"
+		echo "14. 🔄 Обновить Ядро Xray"
+		echo "15. 🎭 Сменить SNI"
+		echo "16. 🚀 Сменить домены WARP"
     fi
     echo "0. 🚪 Выход"
     echo "#########################################################"
@@ -1335,7 +1216,7 @@ while true; do
         7) speedtest_bridge ; read -n 1 -s -r -p "Нажми любую клавишу..." ;;
         8) show_logs ; read -n 1 -s -r -p "Нажми любую клавишу..." ;;
         9) harden_system ; read -n 1 -s -r -p "Нажми любую клавишу..." ;;
-        10) setup_ssh_notify ; read -n 1 -s -r -p "Нажми любую клавишу..." ;;
+        10) manage_mtproto ;;
         11) toggle_autostart ; read -n 1 -s -r -p "Нажми любую клавишу..." ;;
         12) create_backup ; read -n 1 -s -r -p "Нажми любую клавишу..." ;;
         13) update_cluster ; read -n 1 -s -r -p "Нажми любую клавишу..." ;;
