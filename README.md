@@ -28,7 +28,7 @@
 
 1. Скачайте и запустите скрипт управления на главном сервере:
    ```bash
-   wget -q [https://raw.githubusercontent.com/sud0-i/KVN-XRAY-CLUSTER/main/cluster.sh](https://raw.githubusercontent.com/sud0-i/KVN-XRAY-CLUSTER/main/cluster.sh) -O cluster.sh
+   wget -q https://raw.githubusercontent.com/sud0-i/KVN-XRAY-CLUSTER/main/cluster.sh -O cluster.sh
    chmod +x cluster.sh
    ./cluster.sh
    ```
