@@ -3,7 +3,11 @@ name: Build and Release VPN Cluster
 on:
   push:
     tags:
-      - 'v*' # Запускать сборку только при создании тегов (например, v1.0.0)
+      - 'v*' # Запускать сборку только при создании тегов
+
+# ДАЕМ ПРАВА НА СОЗДАНИЕ РЕЛИЗОВ И ЗАГРУЗКУ ФАЙЛОВ
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -16,6 +20,7 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
+        cache: false # ОТКЛЮЧАЕМ КЭШ, ЧТОБЫ УБРАТЬ ОШИБКУ ПРО go.sum
 
     - name: Download dependencies
       run: go mod tidy
