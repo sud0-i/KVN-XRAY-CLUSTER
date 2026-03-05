@@ -444,7 +444,7 @@ func sendStats() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := stats.NewStatsServiceClient(conn).QueryStats(ctx, &stats.QueryStatsRequest{Pattern: "user>>>", Reset: true})
+	resp, err := stats.NewStatsServiceClient(conn).QueryStats(ctx, &stats.QueryStatsRequest{Pattern: "user>>>", Reset_: true})
 	if err != nil {
 		log.Println("QueryStats error:", err)
 		return
