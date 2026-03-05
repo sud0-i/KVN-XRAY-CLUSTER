@@ -448,7 +448,7 @@ HTML_EOF
 
         echo "⏳ Установка Xray..."
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
-		mkdir -p /var/log/xray && chmod 777 /var/log/xray
+        mkdir -p /var/log/xray && chmod 777 /var/log/xray
         sed -i 's/User=nobody/User=root/g' /etc/systemd/system/xray.service
         systemctl daemon-reload
 
@@ -489,7 +489,7 @@ SVC
             read -p "Домен для моста (просто название для ссылки): " DOMAIN
         fi
     elif [ "$TYPE" == "eu" ]; then
-        echo -e "\n🇪🇺 ДОБАВЛЕНИЕ EU-НОДЫ (+WARP)"
+        echo -e "\n🇪🇺 ДОБАВЛЕНИЕ EU-НОДЫ (+ Нативный WARP)"
         read -p "IP адрес сервера: " IP
         read -s -p "Root пароль от $IP: " PASS; echo ""
     fi
@@ -512,7 +512,7 @@ SVC
         apt-get update -q >/dev/null 2>&1
         apt-get install -yq curl jq openssl ufw >/dev/null 2>&1
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
-		mkdir -p /var/log/xray && chmod 777 /var/log/xray
+        mkdir -p /var/log/xray && chmod 777 /var/log/xray
         
         ufw allow 22/tcp >/dev/null 2>&1
 
@@ -557,15 +557,22 @@ SVC
             ufw --force enable >/dev/null 2>&1
             
         elif [ "$TYPE" == "eu" ]; then
-            apt-get install -yq gpg lsb-release >/dev/null 2>&1
-            curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-            echo "deb[arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
-            apt-get update -q >/dev/null 2>&1
-            apt-get install -yq cloudflare-warp >/dev/null 2>&1
-            warp-cli --accept-tos registration new >/dev/null 2>&1
-            warp-cli --accept-tos mode proxy >/dev/null 2>&1
-            warp-cli --accept-tos proxy port 40000 >/dev/null 2>&1
-            warp-cli --accept-tos connect >/dev/null 2>&1
+            # 1. Скачиваем wgcf для работы с API Cloudflare
+            wget -q https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64 -O /usr/local/bin/wgcf
+            chmod +x /usr/local/bin/wgcf
+            
+            # 2. Регистрируем WARP аккаунт и получаем конфигурацию
+            cd /usr/local/etc/xray
+            yes | /usr/local/bin/wgcf register --accept-tos >/dev/null 2>&1
+            /usr/local/bin/wgcf generate >/dev/null 2>&1
+            
+            # 3. Достаем ключи WireGuard из сгенерированного файла
+            WARP_PRIV=$(grep "PrivateKey" wgcf-profile.conf | awk -F' = ' '{print $2}')
+            WARP_IP=$(grep -m1 "Address" wgcf-profile.conf | awk -F' = ' '{print $2}' | cut -d'/' -f1)
+            
+            # 4. Сохраняем для Агента и подчищаем за собой
+            echo "$WARP_PRIV|$WARP_IP" > /usr/local/etc/xray/warp_keys.txt
+            rm -f wgcf-profile.conf wgcf-account.toml /usr/local/bin/wgcf
             
             KEYS=$(/usr/local/bin/xray x25519)
             PK=$(echo "$KEYS" | grep -i "Private" | awk '{print $NF}')

@@ -143,6 +143,34 @@ func buildEUConfigSafe(state State) {
 		parsedWarpDomains = append(parsedWarpDomains, strings.Trim(d, `"`))
 	}
 
+	// УМНЫЙ FALLBACK: Если ключей WireGuard нет, используем старый SOCKS (для старых нод)
+	warpOutbound := map[string]interface{}{
+		"protocol": "socks",
+		"tag":      "warp",
+		"settings": map[string]interface{}{"servers": []map[string]interface{}{{"address": "127.0.0.1", "port": 40000}}},
+	}
+
+	// Если есть файл с ключами WARP, собираем нативный WireGuard Outbound
+	warpKeys, err := os.ReadFile("/usr/local/etc/xray/warp_keys.txt")
+	if err == nil {
+		parts := strings.Split(strings.TrimSpace(string(warpKeys)), "|")
+		if len(parts) >= 2 {
+			warpOutbound = map[string]interface{}{
+				"protocol": "wireguard",
+				"tag":      "warp",
+				"settings": map[string]interface{}{
+					"secretKey": parts[0],
+					"address":   []string{parts[1]},
+					"peers": []map[string]interface{}{{
+						"publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfTz0=",
+						"endpoint":  "engage.cloudflareclient.com:2408",
+					}},
+					"mtu": 1280,
+				},
+			}
+		}
+	}
+
 	config := map[string]interface{}{
 		"log": map[string]interface{}{"loglevel": "warning"},
 		"inbounds": []map[string]interface{}{
@@ -160,7 +188,7 @@ func buildEUConfigSafe(state State) {
 		},
 		"outbounds": []map[string]interface{}{
 			{"protocol": "freedom", "tag": "direct"},
-			{"protocol": "socks", "tag": "warp", "settings": map[string]interface{}{"servers": []map[string]interface{}{{"address": "127.0.0.1", "port": 40000}}}},
+			warpOutbound, // <--- Подставляем наш умный блок маршрутизации WARP
 			{"protocol": "blackhole", "tag": "block"},
 		},
 		"routing": map[string]interface{}{
