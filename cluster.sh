@@ -424,11 +424,10 @@ EOF
 deploy_node() {
     TYPE=$1
     if [ "$TYPE" == "ru_local" ]; then
-        echo -e "\n🏠 ДОБАВЛЕНИЕ ЛОКАЛЬНОГО RU-МОСТА (Classic TLS на 443 порту)"
+        echo -e "\n🏠 ДОБАВЛЕНИЕ ЛОКАЛЬНОГО RU-МОСТА"
         DOMAIN=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
         TOKEN=$(grep CLUSTER_TOKEN /etc/orchestrator/config.env | cut -d'"' -f2)
         
-        echo "⏳ Настройка Nginx и заглушки..."
         cat << 'EOF' > /etc/nginx/sites-available/default
 server { listen 80; server_name _; return 301 https://$host$request_uri; }
 server {
@@ -446,16 +445,13 @@ EOF
 HTML_EOF
         systemctl restart nginx
 
-        echo "⏳ Установка Xray..."
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
         mkdir -p /var/log/xray && chmod 777 /var/log/xray
         sed -i 's/User=nobody/User=root/g' /etc/systemd/system/xray.service
         systemctl daemon-reload
 
-        echo "⏳ Настройка Агента..."
         cp /etc/orchestrator/bin/agent /usr/local/bin/vpn-agent
-        
-        echo "tls|$DOMAIN" > /usr/local/etc/xray/agent_keys.txt
+        echo "tls|$DOMAIN|none" > /usr/local/etc/xray/agent_keys.txt
         curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8080/api/register?type=ru&ip=127.0.0.1&domain=$DOMAIN&mode=tls" >/dev/null
 
         cat <<SVC > /etc/systemd/system/vpn-agent.service
@@ -469,32 +465,20 @@ WantedBy=multi-user.target
 SVC
         systemctl daemon-reload && systemctl enable vpn-agent && systemctl restart vpn-agent
         sleep 2; systemctl restart xray
-        echo "✅ Локальный мост успешно установлен!"
+        echo "✅ Локальный мост установлен!"
         return
     fi
 
-    RU_MODE="1"
+    # Секция для удаленных нод
+    read -p "IP адрес сервера: " IP
+    read -s -p "Root пароль от $IP: " PASS; echo ""
+    
     if [ "$TYPE" == "ru_remote" ]; then
-        echo -e "\n🌉 ДОБАВЛЕНИЕ УДАЛЕННОГО RU-МОСТА"
-        read -p "IP адрес сервера: " IP
-        read -s -p "Root пароль от $IP: " PASS; echo ""
-        echo "1) REALITY (Маскировка под чужой сайт, домен не нужен)"
-        echo "2) Classic TLS (Требуется домен, ставится заглушка Nextcloud)"
-        read -p "Режим работы: " RU_MODE
-        if [ "$RU_MODE" == "2" ]; then
-            read -p "Введи домен для моста: " DOMAIN
-            verify_dns_propagation "$DOMAIN"
-            read -p "Email для SSL (Let's Encrypt): " EMAIL
-        else
-            read -p "Домен для моста (просто название для ссылки): " DOMAIN
-        fi
-    elif [ "$TYPE" == "eu" ]; then
-        echo -e "\n🇪🇺 ДОБАВЛЕНИЕ EU-НОДЫ (+ Нативный WARP)"
-        read -p "IP адрес сервера: " IP
-        read -s -p "Root пароль от $IP: " PASS; echo ""
+        echo "1) REALITY | 2) Classic TLS"
+        read -p "Режим: " RU_MODE
+        [ "$RU_MODE" == "2" ] && { read -p "Домен: " DOMAIN; verify_dns_propagation "$DOMAIN"; read -p "Email: " EMAIL; } || read -p "Название домена: " DOMAIN
     fi
 
-    echo "⏳ Копирование SSH-ключа на удаленный сервер (Безопасно)..."
     export SSHPASS="$PASS"
     sshpass -e ssh-copy-id -i /root/.ssh/vpn_cluster_key.pub -o StrictHostKeyChecking=no root@$IP >/dev/null 2>&1
     CMD_PREFIX="ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP bash -s"
@@ -504,112 +488,60 @@ SVC
     B_UUID=$(grep BRIDGE_UUID /etc/orchestrator/config.env | cut -d'"' -f2)
     M_DOM=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
 
-    echo "⏳ Запуск автоматической настройки сервера..."
     RAW_OUT=$($CMD_PREFIX "$M_IP" "$C_TOK" "$B_UUID" "$M_DOM" "$TYPE" "$DOMAIN" "$RU_MODE" "$EMAIL" "$REPO_URL" << 'EOF'
         MASTER_IP=$1; TOKEN=$2; BRIDGE_UUID=$3; MASTER_DOM=$4; TYPE=$5; DOMAIN=$6; RU_MODE=$7; EMAIL=$8; GITHUB_REPO=$9
-        
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -q >/dev/null 2>&1
         apt-get install -yq curl jq openssl ufw >/dev/null 2>&1
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
         mkdir -p /var/log/xray && chmod 777 /var/log/xray
-        
         ufw allow 22/tcp >/dev/null 2>&1
 
         if [ "$TYPE" == "ru_remote" ]; then
             if [ "$RU_MODE" == "2" ]; then
                 apt-get install -yq nginx certbot python3-certbot-nginx >/dev/null 2>&1
                 certbot certonly --standalone -d $DOMAIN -m $EMAIL --agree-tos -n >/dev/null 2>&1
-                cat << 'HTML_EOF' > /var/www/html/index.html
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Nextcloud</title><style>body{background-color:#0082c9;background-image:linear-gradient(40deg,#0082c9 0%,#004c8c 100%);font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}.form{background:#fff;padding:40px;border-radius:8px;width:300px;text-align:center;box-shadow:0 4px 10px rgba(0,0,0,0.1)}.form input{width:100%;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px;box-sizing:border-box}.form button{width:100%;padding:12px;background:#0082c9;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:bold;margin-top:10px}</style></head><body><div class="form"><h2 style="color:#333;margin-top:0">Nextcloud</h2><input type="text" placeholder="Username or email"><input type="password" placeholder="Password"><button>Log in</button></div></body></html>
-HTML_EOF
-                cat << 'NGINX_EOF' > /etc/nginx/sites-available/default
-server { listen 8080 default_server; root /var/www/html; index index.html; }
-NGINX_EOF
                 systemctl restart nginx
-                echo "tls|$DOMAIN" > /usr/local/etc/xray/agent_keys.txt
+                echo "tls|$DOMAIN|none" > /usr/local/etc/xray/agent_keys.txt
                 curl -s -H "Authorization: Bearer $TOKEN" "https://$MASTER_DOM/api/register?type=ru&ip=$(curl -s4 ifconfig.me)&domain=$DOMAIN&mode=tls" >/dev/null
-                echo "NODE_DATA|ru|tls"
             else
-                KEYS=$(/usr/local/bin/xray x25519)
-                PK=$(echo "$KEYS" | grep -i "Private" | awk '{print $NF}')
-                PUB=$(echo "$KEYS" | grep -iE "Public|Password" | awk '{print $NF}')
+                X_KEYS=$(/usr/local/bin/xray x25519)
+                PK=$(echo "$X_KEYS" | grep "Private key:" | awk '{print $3}')
+                PUB=$(echo "$X_KEYS" | grep "Public key:" | awk '{print $3}')
                 SID=$(openssl rand -hex 4)
-                echo "$PK|$SID" > /usr/local/etc/xray/agent_keys.txt
-                curl -s -H "Authorization: Bearer $TOKEN" "https://$MASTER_DOM/api/register?type=ru&ip=$(curl -s4 ifconfig.me)&domain=$DOMAIN&pk=$PUB&sid=$SID&mode=reality" >/dev/null
-                echo "NODE_DATA|ru|reality"
+                echo "$PK|$SID|none" > /usr/local/etc/xray/agent_keys.txt
+                curl -s -G -H "Authorization: Bearer $TOKEN" --data-urlencode "type=ru" --data-urlencode "ip=$(curl -s4 ifconfig.me)" --data-urlencode "domain=$DOMAIN" --data-urlencode "pk=$PUB" --data-urlencode "sid=$SID" --data-urlencode "mode=reality" "https://$MASTER_DOM/api/register" >/dev/null
             fi
-            
-            wget -q "https://github.com/${GITHUB_REPO}/releases/latest/download/vpn-agent" -O /usr/local/bin/vpn-agent
-            chmod +x /usr/local/bin/vpn-agent
-            cat <<SVC > /etc/systemd/system/vpn-agent.service
+        elif [ "$TYPE" == "eu" ]; then
+            X_KEYS=$(/usr/local/bin/xray x25519)
+            PK=$(echo "$X_KEYS" | grep "Private key:" | awk '{print $3}')
+            PUB=$(echo "$X_KEYS" | grep "Public key:" | awk '{print $3}')
+            SS_PASS=$(openssl rand -base64 16 | tr -d '+/=' | cut -c1-16)
+            XP=$(openssl rand -hex 6)
+            echo "$PK|$SS_PASS|$XP" > /usr/local/etc/xray/agent_keys.txt
+            curl -s -G -H "Authorization: Bearer $TOKEN" --data-urlencode "type=eu" --data-urlencode "ip=$(curl -s4 ifconfig.me)" --data-urlencode "pk=$PUB" --data-urlencode "ss=$SS_PASS" --data-urlencode "xp=$XP" "https://$MASTER_DOM/api/register" >/dev/null
+            ufw allow 5000/tcp >/dev/null 2>&1
+        fi
+        
+        wget -q "https://github.com/${GITHUB_REPO}/releases/latest/download/vpn-agent" -O /usr/local/bin/vpn-agent
+        chmod +x /usr/local/bin/vpn-agent
+        cat <<SVC > /etc/systemd/system/vpn-agent.service
 [Unit]
 Description=VPN Agent
 [Service]
-ExecStart=/usr/local/bin/vpn-agent -master https://$MASTER_DOM -token $TOKEN -role ru
+ExecStart=/usr/local/bin/vpn-agent -master https://$MASTER_DOM -token $TOKEN -role ${TYPE:0:2}
 Restart=always
 [Install]
 WantedBy=multi-user.target
 SVC
-            systemctl daemon-reload && systemctl enable vpn-agent && systemctl restart vpn-agent
-            ufw allow 443/tcp >/dev/null 2>&1
-            ufw allow 4433/tcp >/dev/null 2>&1
-            ufw --force enable >/dev/null 2>&1
-            
-        elif [ "$TYPE" == "eu" ]; then
-            # 1. Скачиваем wgcf для работы с API Cloudflare
-            wget -q https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64 -O /usr/local/bin/wgcf
-            chmod +x /usr/local/bin/wgcf
-            
-            # 2. Регистрируем WARP аккаунт и получаем конфигурацию
-            cd /usr/local/etc/xray
-            yes | /usr/local/bin/wgcf register --accept-tos >/dev/null 2>&1
-            /usr/local/bin/wgcf generate >/dev/null 2>&1
-            
-            # 3. Достаем ключи WireGuard из сгенерированного файла
-            WARP_PRIV=$(grep "PrivateKey" wgcf-profile.conf | awk -F' = ' '{print $2}')
-            WARP_IP=$(grep -m1 "Address" wgcf-profile.conf | awk -F' = ' '{print $2}' | cut -d'/' -f1)
-            
-            # 4. Сохраняем для Агента и подчищаем за собой
-            echo "$WARP_PRIV|$WARP_IP" > /usr/local/etc/xray/warp_keys.txt
-            rm -f wgcf-profile.conf wgcf-account.toml /usr/local/bin/wgcf
-            
-            KEYS=$(/usr/local/bin/xray x25519)
-            PK=$(echo "$KEYS" | grep -i "Private" | awk '{print $NF}')
-            PUB=$(echo "$KEYS" | grep -iE "Public|Password" | awk '{print $NF}')
-            SS_PASS=$(openssl rand -base64 16)
-            XP=$(openssl rand -hex 6)
-            
-            echo "$PK|$SS_PASS|$XP" > /usr/local/etc/xray/agent_keys.txt
-            
-            wget -q "https://github.com/${GITHUB_REPO}/releases/latest/download/vpn-agent" -O /usr/local/bin/vpn-agent
-            chmod +x /usr/local/bin/vpn-agent
-            cat <<SVC > /etc/systemd/system/vpn-agent.service
-[Unit]
-Description=VPN Agent (EU)
-[Service]
-ExecStart=/usr/local/bin/vpn-agent -master https://$MASTER_DOM -token $TOKEN -role eu
-Restart=always
-[Install]
-WantedBy=multi-user.target
-SVC
-            systemctl daemon-reload && systemctl enable vpn-agent && systemctl restart vpn-agent
-            
-            ufw allow 443/tcp >/dev/null 2>&1
-            ufw allow 4433/tcp >/dev/null 2>&1
-            ufw allow 5000/tcp >/dev/null 2>&1
-            ufw --force enable >/dev/null 2>&1
-            
-            curl -s -H "Authorization: Bearer $TOKEN" "https://$MASTER_DOM/api/register?type=eu&ip=$(curl -s4 ifconfig.me)&pk=$PUB&ss=$SS_PASS&xp=$XP" >/dev/null
-            echo "NODE_DATA|eu"
-        fi
-        sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/g' /etc/ssh/sshd_config
-        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+        systemctl daemon-reload && systemctl enable vpn-agent && systemctl restart vpn-agent
+        ufw allow 443/tcp >/dev/null 2>&1
+        ufw allow 4433/tcp >/dev/null 2>&1
+        ufw --force enable >/dev/null 2>&1
+        echo "NODE_DATA|$TYPE"
 EOF
 )
-    DATA=$(echo "$RAW_OUT" | grep "NODE_DATA")
-    if [ -z "$DATA" ]; then echo "❌ Ошибка деплоя. Лог: $RAW_OUT"
-    else echo "✅ Узел успешно развернут! Мастер подхватит его через 30 секунд."; fi
+    echo "$RAW_OUT" | grep -q "NODE_DATA" && echo "✅ Готово!" || echo "❌ Ошибка: $RAW_OUT"
 }
 
 # ==============================================================================

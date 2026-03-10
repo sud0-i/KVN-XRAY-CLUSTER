@@ -143,14 +143,11 @@ func buildEUConfigSafe(state State) {
 		parsedWarpDomains = append(parsedWarpDomains, strings.Trim(d, `"`))
 	}
 
-	// УМНЫЙ FALLBACK: Если ключей WireGuard нет, используем старый SOCKS (для старых нод)
 	warpOutbound := map[string]interface{}{
-		"protocol": "socks",
+		"protocol": "freedom",
 		"tag":      "warp",
-		"settings": map[string]interface{}{"servers": []map[string]interface{}{{"address": "127.0.0.1", "port": 40000}}},
 	}
 
-	// Если есть файл с ключами WARP, собираем нативный WireGuard Outbound
 	warpKeys, err := os.ReadFile("/usr/local/etc/xray/warp_keys.txt")
 	if err == nil {
 		parts := strings.Split(strings.TrimSpace(string(warpKeys)), "|")
@@ -178,17 +175,17 @@ func buildEUConfigSafe(state State) {
 			{
 				"port": 443, "protocol": "vless",
 				"settings": map[string]interface{}{"clients": []map[string]interface{}{{"id": state.BridgeUUID, "flow": "xtls-rprx-vision"}}, "decryption": "none"},
-				"streamSettings": map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"dest": fmt.Sprintf("%s:443", mySNI), "serverNames": []string{mySNI}, "privateKey": pk, "shortIds": []string{""}}},
+				"streamSettings": map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"dest": fmt.Sprintf("%s:443", mySNI), "serverNames": []string{mySNI}, "privateKey": pk, "shortIds": []string{xp}}},
 			},
 			{
 				"port": 4433, "protocol": "vless",
 				"settings": map[string]interface{}{"clients": []map[string]interface{}{{"id": state.BridgeUUID}}, "decryption": "none"},
-				"streamSettings": map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": "/" + xp, "mode": "auto"}, "realitySettings": map[string]interface{}{"dest": fmt.Sprintf("%s:443", mySNI), "serverNames": []string{mySNI}, "privateKey": pk, "shortIds": []string{""}}},
+				"streamSettings": map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": "/" + xp, "mode": "auto"}, "realitySettings": map[string]interface{}{"dest": fmt.Sprintf("%s:443", mySNI), "serverNames": []string{mySNI}, "privateKey": pk, "shortIds": []string{xp}}},
 			},
 		},
 		"outbounds": []map[string]interface{}{
 			{"protocol": "freedom", "tag": "direct"},
-			warpOutbound, // <--- Подставляем наш умный блок маршрутизации WARP
+			warpOutbound,
 			{"protocol": "blackhole", "tag": "block"},
 		},
 		"routing": map[string]interface{}{
@@ -201,13 +198,8 @@ func buildEUConfigSafe(state State) {
 	}
 
 	jsonData, _ := json.MarshalIndent(config, "", "  ")
-	if err := os.WriteFile("/usr/local/etc/xray/config.json", jsonData, 0644); err != nil {
-		log.Println("Failed to write EU config:", err)
-		return
-	}
-	if err := exec.Command("systemctl", "restart", "xray").Run(); err != nil {
-		log.Println("Failed to restart xray:", err)
-	}
+	os.WriteFile("/usr/local/etc/xray/config.json", jsonData, 0644)
+	exec.Command("systemctl", "restart", "xray").Run()
 }
 
 func buildRUConfigSafe(state State) {
