@@ -39,8 +39,8 @@ manage_mtproto() {
     if [ "$M_ACT" == "1" ]; then
         echo "⏳ Настройка MTProto Proxy (FakeTLS)..."
         if ! docker ps | grep -q mtproto-vpn; then
-            SECRET=$(docker run --rm nineseconds/mtg:2 generate-secret tls -c google.com)
-            docker run -d --name mtproto-vpn --restart unless-stopped -p 8443:3128 nineseconds/mtg:2 simple-run -n 1.1.1.1 $SECRET >/dev/null 2>&1
+            SECRET=$(docker run --rm nineseconds/mtg:1 generate-secret tls -c "google.com")
+            docker run -d --name mtg -p 8443:3128 nineseconds/mtg:1 run -b 0.0.0.0:3128 $SECRET >/dev/null 2>&1
             ufw allow 8443/tcp >/dev/null 2>&1
         else
             SECRET=$(docker inspect mtproto-vpn | grep -o 'simple-run -n 1.1.1.1 .*"' | cut -d' ' -f4 | tr -d '"')
