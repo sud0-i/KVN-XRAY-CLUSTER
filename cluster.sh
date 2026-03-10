@@ -515,7 +515,6 @@ SVC
                 PUB=$(echo "$KEYS" | grep -iE "Public" | awk '{print $NF}')
                 SID=$(openssl rand -hex 4)
                 echo "$PK|$SID|none" > /usr/local/etc/xray/agent_keys.txt
-                # Исправлено: безопасная регистрация через --data-urlencode
                 curl -s -G -H "Authorization: Bearer $TOKEN" \
                     --data-urlencode "type=ru" \
                     --data-urlencode "ip=$(curl -s4 ifconfig.me)" \
@@ -525,7 +524,6 @@ SVC
                     "https://$MASTER_DOM/api/register" >/dev/null
             fi
         elif [ "$TYPE" == "eu" ]; then
-            # (Блок установки WARP остается без изменений)
             wget -q https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64 -O /usr/local/bin/wgcf
             chmod +x /usr/local/bin/wgcf
             cd /usr/local/etc/xray
@@ -539,12 +537,10 @@ SVC
             KEYS=$(/usr/local/bin/xray x25519)
             PK=$(echo "$KEYS" | grep -i "Private" | awk '{print $NF}')
             PUB=$(echo "$KEYS" | grep -iE "Public" | awk '{print $NF}')
-            # Исправлено: пароль без спецсимволов
             SS_PASS=$(openssl rand -base64 16 | tr -d '+/=' | cut -c1-16)
             XP=$(openssl rand -hex 6)
             echo "$PK|$SS_PASS|$XP" > /usr/local/etc/xray/agent_keys.txt
             
-            # Исправлено: регистрация EU через --data-urlencode
             curl -s -G -H "Authorization: Bearer $TOKEN" \
                 --data-urlencode "type=eu" \
                 --data-urlencode "ip=$(curl -s4 ifconfig.me)" \
@@ -560,7 +556,7 @@ SVC
 [Unit]
 Description=VPN Agent
 [Service]
-ExecStart=/usr/local/bin/vpn-agent -master https://$MASTER_DOM -token $TOKEN -role eu
+ExecStart=/usr/local/bin/vpn-agent -master https://$MASTER_DOM -token $TOKEN -role ${TYPE:0:2}
 Restart=always
 [Install]
 WantedBy=multi-user.target
@@ -573,6 +569,8 @@ SVC
         echo "NODE_DATA|$TYPE"
 EOF
 )
+    echo "$RAW_OUT" | grep -q "NODE_DATA" && echo "✅ Готово!" || echo "❌ Ошибка: $RAW_OUT"
+}
 
 # ==============================================================================
 # MENU
