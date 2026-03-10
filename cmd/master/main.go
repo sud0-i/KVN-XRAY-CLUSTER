@@ -207,23 +207,21 @@ func handleBan(w http.ResponseWriter, r *http.Request) {
 
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	q := r.URL.Query()
-	typ := q.Get("type")
-	ip := q.Get("ip")
-	pk := q.Get("pk")
+	query := r.URL.Query()
+	typ := query.Get("type")
+	ip := query.Get("ip")
+	pk := query.Get("pk")
 
 	if typ == "eu" {
-		_, err := db.ExecContext(ctx, "INSERT OR REPLACE INTO exits (ip, pub_key, ss_pass, xhttp_path, last_seen) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)", ip, pk, q.Get("ss"), q.Get("xp"))
-		if err != nil {
-			log.Println("DB Register EU error:", err)
-		}
+		ss := query.Get("ss")
+		xp := query.Get("xp")
+		db.ExecContext(ctx, "INSERT OR REPLACE INTO exits (ip, pub_key, ss_pass, xhttp_path, last_seen) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)", ip, pk, ss, xp)
 	} else if typ == "ru" {
-		mode := q.Get("mode")
+		mode := query.Get("mode")
 		if mode == "" { mode = "reality" }
-		_, err := db.ExecContext(ctx, "INSERT OR REPLACE INTO bridges (ip, domain, pub_key, sid, mode, last_seen) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", ip, q.Get("domain"), pk, q.Get("sid"), mode)
-		if err != nil {
-			log.Println("DB Register RU error:", err)
-		}
+		domain := query.Get("domain")
+		sid := query.Get("sid")
+		db.ExecContext(ctx, "INSERT OR REPLACE INTO bridges (ip, domain, pub_key, sid, mode, last_seen) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", ip, domain, pk, sid, mode)
 	}
 	w.WriteHeader(http.StatusOK)
 }

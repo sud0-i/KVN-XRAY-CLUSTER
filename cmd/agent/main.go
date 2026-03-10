@@ -123,9 +123,17 @@ func buildEUConfigSafe(state State) {
 		return
 	}
 
+	// Безопасный парсинг ключей
 	p := strings.Split(strings.TrimSpace(string(keys)), "|")
-	if len(p) < 3 {
-		log.Println("Invalid keys format")
+	pk, ss, xp := "", "", ""
+	
+	if len(p) > 0 { pk = p[0] }
+	if len(p) > 1 { ss = p[1] }
+	if len(p) > 2 { xp = p[2] }
+
+	// Если приватный ключ пуст, тогда выходим
+	if pk == "" {
+		log.Println("Error: Private key is empty")
 		return
 	}
 	pk, ss, xp := p[0], p[1], p[2]
@@ -210,11 +218,16 @@ func buildRUConfigSafe(state State) {
 	}
 
 	p := strings.Split(strings.TrimSpace(string(keys)), "|")
-	mode, pk, sid, tlsDomain := "reality", "", "", ""
-	if len(p) >= 2 && p[0] == "tls" {
-		mode, tlsDomain = "tls", p[1]
-	} else if len(p) >= 2 {
-		pk, sid = p[0], p[1]
+	pk, ss, xp := "", "", ""
+	
+	if len(p) > 0 { pk = p[0] }
+	if len(p) > 1 { ss = p[1] }
+	if len(p) > 2 { xp = p[2] }
+
+	// Если приватный ключ пуст, тогда выходим
+	if pk == "" {
+		log.Println("Error: Private key is empty")
+		return
 	}
 
 	var clients []map[string]interface{}

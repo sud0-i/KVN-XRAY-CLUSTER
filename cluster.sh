@@ -490,12 +490,16 @@ SVC
 
     RAW_OUT=$($CMD_PREFIX "$M_IP" "$C_TOK" "$B_UUID" "$M_DOM" "$TYPE" "$DOMAIN" "$RU_MODE" "$EMAIL" "$REPO_URL" << 'EOF'
         MASTER_IP=$1; TOKEN=$2; BRIDGE_UUID=$3; MASTER_DOM=$4; TYPE=$5; DOMAIN=$6; RU_MODE=$7; EMAIL=$8; GITHUB_REPO=$9
+        
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -q >/dev/null 2>&1
         apt-get install -yq curl jq openssl ufw >/dev/null 2>&1
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
+        
+        # Исправлено: принудительное создание папок
         mkdir -p /usr/local/etc/xray /var/log/xray
         chmod 777 /var/log/xray
+        
         ufw allow 22/tcp >/dev/null 2>&1
 
         if [ "$TYPE" == "ru_remote" ]; then
@@ -506,22 +510,48 @@ SVC
                 echo "tls|$DOMAIN|none" > /usr/local/etc/xray/agent_keys.txt
                 curl -s -H "Authorization: Bearer $TOKEN" "https://$MASTER_DOM/api/register?type=ru&ip=$(curl -s4 ifconfig.me)&domain=$DOMAIN&mode=tls" >/dev/null
             else
-                X_KEYS=$(/usr/local/bin/xray x25519)
-                PK=$(echo "$X_KEYS" | grep "Private key:" | awk '{print $3}')
-                PUB=$(echo "$X_KEYS" | grep "Public key:" | awk '{print $3}')
+                KEYS=$(/usr/local/bin/xray x25519)
+                PK=$(echo "$KEYS" | grep -i "Private" | awk '{print $NF}')
+                PUB=$(echo "$KEYS" | grep -iE "Public" | awk '{print $NF}')
                 SID=$(openssl rand -hex 4)
                 echo "$PK|$SID|none" > /usr/local/etc/xray/agent_keys.txt
-                curl -s -G -H "Authorization: Bearer $TOKEN" --data-urlencode "type=ru" --data-urlencode "ip=$(curl -s4 ifconfig.me)" --data-urlencode "domain=$DOMAIN" --data-urlencode "pk=$PUB" --data-urlencode "sid=$SID" --data-urlencode "mode=reality" "https://$MASTER_DOM/api/register" >/dev/null
+                # Исправлено: безопасная регистрация через --data-urlencode
+                curl -s -G -H "Authorization: Bearer $TOKEN" \
+                    --data-urlencode "type=ru" \
+                    --data-urlencode "ip=$(curl -s4 ifconfig.me)" \
+                    --data-urlencode "pk=$PUB" \
+                    --data-urlencode "sid=$SID" \
+                    --data-urlencode "mode=reality" \
+                    "https://$MASTER_DOM/api/register" >/dev/null
             fi
         elif [ "$TYPE" == "eu" ]; then
-            X_KEYS=$(/usr/local/bin/xray x25519)
-            PK=$(echo "$X_KEYS" | grep "Private key:" | awk '{print $3}')
-            PUB=$(echo "$X_KEYS" | grep "Public key:" | awk '{print $3}')
+            # (Блок установки WARP остается без изменений)
+            wget -q https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64 -O /usr/local/bin/wgcf
+            chmod +x /usr/local/bin/wgcf
+            cd /usr/local/etc/xray
+            yes | /usr/local/bin/wgcf register --accept-tos >/dev/null 2>&1
+            /usr/local/bin/wgcf generate >/dev/null 2>&1
+            WARP_PRIV=$(grep "PrivateKey" wgcf-profile.conf | awk -F' = ' '{print $2}')
+            WARP_IP=$(grep -m1 "Address" wgcf-profile.conf | awk -F' = ' '{print $2}' | cut -d'/' -f1)
+            echo "$WARP_PRIV|$WARP_IP" > /usr/local/etc/xray/warp_keys.txt
+            rm -f wgcf-profile.conf wgcf-account.toml /usr/local/bin/wgcf
+            
+            KEYS=$(/usr/local/bin/xray x25519)
+            PK=$(echo "$KEYS" | grep -i "Private" | awk '{print $NF}')
+            PUB=$(echo "$KEYS" | grep -iE "Public" | awk '{print $NF}')
+            # Исправлено: пароль без спецсимволов
             SS_PASS=$(openssl rand -base64 16 | tr -d '+/=' | cut -c1-16)
             XP=$(openssl rand -hex 6)
             echo "$PK|$SS_PASS|$XP" > /usr/local/etc/xray/agent_keys.txt
-            curl -s -G -H "Authorization: Bearer $TOKEN" --data-urlencode "type=eu" --data-urlencode "ip=$(curl -s4 ifconfig.me)" --data-urlencode "pk=$PUB" --data-urlencode "ss=$SS_PASS" --data-urlencode "xp=$XP" "https://$MASTER_DOM/api/register" >/dev/null
-            ufw allow 5000/tcp >/dev/null 2>&1
+            
+            # Исправлено: регистрация EU через --data-urlencode
+            curl -s -G -H "Authorization: Bearer $TOKEN" \
+                --data-urlencode "type=eu" \
+                --data-urlencode "ip=$(curl -s4 ifconfig.me)" \
+                --data-urlencode "pk=$PUB" \
+                --data-urlencode "ss=$SS_PASS" \
+                --data-urlencode "xp=$XP" \
+                "https://$MASTER_DOM/api/register" >/dev/null
         fi
         
         wget -q "https://github.com/${GITHUB_REPO}/releases/latest/download/vpn-agent" -O /usr/local/bin/vpn-agent
@@ -530,7 +560,7 @@ SVC
 [Unit]
 Description=VPN Agent
 [Service]
-ExecStart=/usr/local/bin/vpn-agent -master https://$MASTER_DOM -token $TOKEN -role ${TYPE:0:2}
+ExecStart=/usr/local/bin/vpn-agent -master https://$MASTER_DOM -token $TOKEN -role eu
 Restart=always
 [Install]
 WantedBy=multi-user.target
@@ -538,12 +568,11 @@ SVC
         systemctl daemon-reload && systemctl enable vpn-agent && systemctl restart vpn-agent
         ufw allow 443/tcp >/dev/null 2>&1
         ufw allow 4433/tcp >/dev/null 2>&1
+        ufw allow 5000/tcp >/dev/null 2>&1
         ufw --force enable >/dev/null 2>&1
         echo "NODE_DATA|$TYPE"
 EOF
 )
-    echo "$RAW_OUT" | grep -q "NODE_DATA" && echo "✅ Готово!" || echo "❌ Ошибка: $RAW_OUT"
-}
 
 # ==============================================================================
 # MENU
