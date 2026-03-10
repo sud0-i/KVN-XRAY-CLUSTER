@@ -446,7 +446,7 @@ HTML_EOF
         systemctl restart nginx
 
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
-        mkdir -p /var/log/xray && chmod 777 /var/log/xray
+        mkdir -p /usr/local/etc/xray /var/log/xray && chmod 777 /var/log/xray
         sed -i 's/User=nobody/User=root/g' /etc/systemd/system/xray.service
         systemctl daemon-reload
 
