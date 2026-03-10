@@ -494,7 +494,8 @@ SVC
         apt-get update -q >/dev/null 2>&1
         apt-get install -yq curl jq openssl ufw >/dev/null 2>&1
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
-        mkdir -p /var/log/xray && chmod 777 /var/log/xray
+        mkdir -p /usr/local/etc/xray /var/log/xray
+        chmod 777 /var/log/xray
         ufw allow 22/tcp >/dev/null 2>&1
 
         if [ "$TYPE" == "ru_remote" ]; then
