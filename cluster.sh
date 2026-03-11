@@ -297,9 +297,21 @@ manage_users_cli() {
                 echo "2) Безлимитный аккаунт"
                 read -p "Тип аккаунта: " L_TYPE
                 LIMIT=5
-                if [ "$L_TYPE" == "2" ]; then LIMIT=0; fi
+                if [ "$L_TYPE" == "2" ]; then
+                    LIMIT=0
+                    sqlite3 /etc/orchestrator/core.db "INSERT INTO users (uuid, name, expires_at, ip_limit) VALUES ('$U_UUID', '$U_NAME', NULL, $LIMIT);"
+                else
+                    LIMIT=5
+                    sqlite3 /etc/orchestrator/core.db "INSERT INTO users (uuid, name, expires_at, ip_limit) VALUES ('$U_UUID', '$U_NAME', datetime('now', '+30 days'), $LIMIT);"
+                fi
                 U_UUID=$(uuidgen)
-                sqlite3 /etc/orchestrator/core.db "INSERT INTO users (uuid, name, expires_at, ip_limit) VALUES ('$U_UUID', '$U_NAME', datetime('now', '+30 days'), $LIMIT);"
+                if [ "$L_TYPE" == "2" ]; then
+                    LIMIT=0
+                    sqlite3 /etc/orchestrator/core.db "INSERT INTO users (uuid, name, expires_at, ip_limit) VALUES ('$U_UUID', '$U_NAME', NULL, $LIMIT);"
+                else
+                    LIMIT=5
+                    sqlite3 /etc/orchestrator/core.db "INSERT INTO users (uuid, name, expires_at, ip_limit) VALUES ('$U_UUID', '$U_NAME', datetime('now', '+30 days'), $LIMIT);"
+                fi
                 DOMAIN=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
                 echo "✅ Пользователь добавлен в БД!"
                 echo "🔗 Ссылка: https://$DOMAIN/sub/$U_UUID.html"
@@ -526,30 +538,15 @@ SVC
                     "https://$MASTER_DOM/api/register" >/dev/null
             fi
         elif [ "$TYPE" == "eu" ]; then
-            wget -q https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64 -O /usr/local/bin/wgcf
-            chmod +x /usr/local/bin/wgcf
-            cd /usr/local/etc/xray
-            yes | /usr/local/bin/wgcf register --accept-tos >/dev/null 2>&1
-            /usr/local/bin/wgcf generate >/dev/null 2>&1
-            WARP_PRIV=$(grep "PrivateKey" wgcf-profile.conf | awk -F' = ' '{print $2}')
-            WARP_IP=$(grep -m1 "Address" wgcf-profile.conf | awk -F' = ' '{print $2}' | cut -d'/' -f1)
-            echo "$WARP_PRIV|$WARP_IP" > /usr/local/etc/xray/warp_keys.txt
-            rm -f wgcf-profile.conf wgcf-account.toml /usr/local/bin/wgcf
+            curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+            source /etc/os-release
+            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/cloudflare-client.list
+            apt-get update -q && apt-get install -yq cloudflare-warp >/dev/null 2>&1
             
-            KEYS=$(/usr/local/bin/xray x25519)
-            PK=$(echo "$KEYS" | grep -i "Private" | awk '{print $NF}')
-            PUB=$(echo "$KEYS" | grep -iE "Public|Password" | head -n 1 | awk '{print $NF}')
-            SS_PASS=$(openssl rand -base64 16)
-            XP=$(openssl rand -hex 6)
-            echo "$PK|$SS_PASS|$XP" > /usr/local/etc/xray/agent_keys.txt
-            
-            curl -s -G -H "Authorization: Bearer $TOKEN" \
-                --data-urlencode "type=eu" \
-                --data-urlencode "ip=$(curl -s4 ifconfig.me)" \
-                --data-urlencode "pk=$PUB" \
-                --data-urlencode "ss=$SS_PASS" \
-                --data-urlencode "xp=$XP" \
-                "https://$MASTER_DOM/api/register" >/dev/null
+            warp-cli --accept-tos registration new >/dev/null 2>&1
+            warp-cli --accept-tos mode proxy >/dev/null 2>&1
+            warp-cli --accept-tos proxy port 40000 >/dev/null 2>&1
+            warp-cli --accept-tos connect >/dev/null 2>&1
         fi
         
         wget --no-check-certificate -q "https://$MASTER_DOM/download/agent" -O /usr/local/bin/vpn-agent

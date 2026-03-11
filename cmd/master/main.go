@@ -543,10 +543,20 @@ func main() {
 						name = fmt.Sprintf("user%d", chatID)
 					}
 
-					db.Exec("INSERT INTO users (uuid, name, chat_id, ip_limit) VALUES (?, ?, ?, ?)", uuid, name, fmt.Sprintf("%d", chatID), lim)
+					if lim == 0 {
+						db.Exec("INSERT INTO users (uuid, name, chat_id, ip_limit, expires_at) VALUES (?, ?, ?, ?, NULL)", uuid, name, fmt.Sprintf("%d", chatID), lim)
+					} else {
+						db.Exec("INSERT INTO users (uuid, name, chat_id, ip_limit) VALUES (?, ?, ?, ?)", uuid, name, fmt.Sprintf("%d", chatID), lim)
+					}
+
 					db.Exec("DELETE FROM invites WHERE code=?", code)
 
-					msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Профиль создан! Тебе дано 30 дней.\n\n👇 Ссылка:\nhttps://%s/sub/%s.html", cfg.Domain, uuid))
+					msgText := fmt.Sprintf("✅ Профиль создан! Тебе дано 30 дней.\n\n👇 Ссылка:\nhttps://%s/sub/%s.html", cfg.Domain, uuid)
+					if lim == 0 {
+						msgText = fmt.Sprintf("✅ Профиль создан! Доступ безлимитный.\n\n👇 Ссылка:\nhttps://%s/sub/%s.html", cfg.Domain, uuid)
+					}
+					
+					msg := tgbotapi.NewMessage(chatID, msgText)
 					if !isAdmin {
 						msg.ReplyMarkup = userKB
 					}

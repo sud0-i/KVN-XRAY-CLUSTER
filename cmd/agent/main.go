@@ -143,44 +143,26 @@ func buildEUConfigSafe(state State) {
 
 	var parsedWarpDomains []string
 	for _, d := range strings.Split(state.WarpDomains, ",") {
-		cleaned := strings.TrimSpace(d)       // Убираем пробелы
-		cleaned = strings.Trim(cleaned, `"`)  // Убираем кавычки
-		if cleaned != "" {                    // Игнорируем пустоту
+		cleaned := strings.TrimSpace(d)
+		cleaned = strings.Trim(cleaned, `"`)
+		if cleaned != "" {
 			parsedWarpDomains = append(parsedWarpDomains, cleaned)
 		}
 	}
 
-	// Динамически собираем правила маршрутизации
+	warpOutbound := map[string]interface{}{
+		"protocol": "socks",
+		"tag":      "warp",
+		"settings": map[string]interface{}{
+			"servers": []map[string]interface{}{{"address": "127.0.0.1", "port": 40000}},
+		},
+	}
+
 	var routingRules []map[string]interface{}
 	if len(parsedWarpDomains) > 0 {
 		routingRules = append(routingRules, map[string]interface{}{"type": "field", "domain": parsedWarpDomains, "outboundTag": "warp"})
 	}
 	routingRules = append(routingRules, map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"})
-
-	warpOutbound := map[string]interface{}{
-		"protocol": "freedom",
-		"tag":      "warp",
-	}
-
-	warpKeys, err := os.ReadFile("/usr/local/etc/xray/warp_keys.txt")
-	if err == nil {
-		wParts := strings.Split(strings.TrimSpace(string(warpKeys)), "|")
-		if len(wParts) >= 2 && wParts[0] != "" && wParts[1] != "" {
-			warpOutbound = map[string]interface{}{
-				"protocol": "wireguard",
-				"tag":      "warp",
-				"settings": map[string]interface{}{
-					"secretKey": wParts[0],
-					"address":   []string{wParts[1]},
-					"peers": []map[string]interface{}{{
-						"publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfTz0=",
-						"endpoint":  "engage.cloudflareclient.com:2408",
-					}},
-					"mtu": 1280,
-				},
-			}
-		}
-	}
 
 	config := map[string]interface{}{
 		"log": map[string]interface{}{"loglevel": "warning"},
