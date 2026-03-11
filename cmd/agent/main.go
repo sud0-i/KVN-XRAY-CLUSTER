@@ -143,8 +143,19 @@ func buildEUConfigSafe(state State) {
 
 	var parsedWarpDomains []string
 	for _, d := range strings.Split(state.WarpDomains, ",") {
-		parsedWarpDomains = append(parsedWarpDomains, strings.Trim(d, `"`))
+		cleaned := strings.TrimSpace(d)       // Убираем пробелы
+		cleaned = strings.Trim(cleaned, `"`)  // Убираем кавычки
+		if cleaned != "" {                    // Игнорируем пустоту
+			parsedWarpDomains = append(parsedWarpDomains, cleaned)
+		}
 	}
+
+	// Динамически собираем правила маршрутизации
+	var routingRules []map[string]interface{}
+	if len(parsedWarpDomains) > 0 {
+		routingRules = append(routingRules, map[string]interface{}{"type": "field", "domain": parsedWarpDomains, "outboundTag": "warp"})
+	}
+	routingRules = append(routingRules, map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"})
 
 	warpOutbound := map[string]interface{}{
 		"protocol": "freedom",
@@ -193,10 +204,7 @@ func buildEUConfigSafe(state State) {
 		},
 		"routing": map[string]interface{}{
 			"domainStrategy": "IPIfNonMatch",
-			"rules": []map[string]interface{}{
-				{"type": "field", "domain": parsedWarpDomains, "outboundTag": "warp"},
-				{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
-			},
+			"rules":          routingRules,
 		},
 	}
 
