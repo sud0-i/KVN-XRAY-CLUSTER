@@ -538,6 +538,9 @@ SVC
                     "https://$MASTER_DOM/api/register" >/dev/null
             fi
         elif [ "$TYPE" == "eu" ]; then
+            # 1. Устанавливаем WARP-CLI и зависимости
+            apt-get update -y
+            apt-get install -y gnupg curl
             curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
             source /etc/os-release
             echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/cloudflare-client.list
@@ -547,6 +550,25 @@ SVC
             warp-cli --accept-tos mode proxy >/dev/null 2>&1
             warp-cli --accept-tos proxy port 40000 >/dev/null 2>&1
             warp-cli --accept-tos connect >/dev/null 2>&1
+
+            # 2. Генерируем ключи Xray
+            KEYS=$(/usr/local/bin/xray x25519)
+            PRV=$(echo "$KEYS" | grep -i "PrivateKey" | awk '{print $NF}')
+            PUB=$(echo "$KEYS" | grep -iE "Public|Password" | head -n 1 | awk '{print $NF}')
+            SS_PASS=$(openssl rand -base64 16)
+            XHTTP_PATH=$(openssl rand -hex 6)
+
+            # 3. Сохраняем ключи для локального агента
+            echo "$PRV|$SS_PASS|$XHTTP_PATH" > /usr/local/etc/xray/agent_keys.txt
+
+            # 4. Регистрируем ноду в базе Мастера по API
+            curl -s -G -H "Authorization: Bearer $TOKEN" \
+                --data-urlencode "type=eu" \
+                --data-urlencode "ip=$(curl -s4 ifconfig.me)" \
+                --data-urlencode "pk=$PUB" \
+                --data-urlencode "ss=$SS_PASS" \
+                --data-urlencode "xp=$XHTTP_PATH" \
+                "https://$MASTER_DOM/api/register" >/dev/null
         fi
         
         wget --no-check-certificate -q "https://$MASTER_DOM/download/agent" -O /usr/local/bin/vpn-agent
