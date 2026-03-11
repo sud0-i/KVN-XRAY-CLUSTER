@@ -38,12 +38,13 @@ manage_mtproto() {
 
     if [ "$M_ACT" == "1" ]; then
         echo "⏳ Настройка MTProto Proxy (FakeTLS)..."
-        if ! docker ps | grep -q mtproto-vpn; then
+        if ! docker ps -a | grep -q mtproto-vpn; then
             SECRET=$(docker run --rm nineseconds/mtg:1 generate-secret tls -c "google.com")
-            docker run -d --name mtg -p 8443:3128 nineseconds/mtg:1 run -b 0.0.0.0:3128 $SECRET >/dev/null 2>&1
+            docker run -d --name mtproto-vpn --restart always -p 8443:3128 nineseconds/mtg:1 run -b 0.0.0.0:3128 $SECRET >/dev/null 2>&1
             ufw allow 8443/tcp >/dev/null 2>&1
+            echo "$SECRET" > /etc/orchestrator/mtg_secret.txt
         else
-            SECRET=$(docker inspect mtproto-vpn | grep -o 'simple-run -n 1.1.1.1 .*"' | cut -d' ' -f4 | tr -d '"')
+            SECRET=$(cat /etc/orchestrator/mtg_secret.txt 2>/dev/null)
         fi
         MY_IP=$(curl -s4 ifconfig.me)
         echo -e "\n✅ MTProto Прокси активен! Ссылка для подключения:\n"
@@ -52,6 +53,7 @@ manage_mtproto() {
     elif [ "$M_ACT" == "2" ]; then
         docker rm -f mtproto-vpn >/dev/null 2>&1
         ufw delete allow 8443/tcp >/dev/null 2>&1
+        rm -f /etc/orchestrator/mtg_secret.txt
         echo "✅ MTProto прокси удален."
     fi
     read -n 1 -s -r -p "Нажми любую клавишу..."
@@ -550,7 +552,7 @@ SVC
                 "https://$MASTER_DOM/api/register" >/dev/null
         fi
         
-        wget -q "https://github.com/${GITHUB_REPO}/releases/latest/download/vpn-agent" -O /usr/local/bin/vpn-agent
+        wget --no-check-certificate -q "https://$MASTER_DOM/download/agent" -O /usr/local/bin/vpn-agent
         chmod +x /usr/local/bin/vpn-agent
         cat <<SVC > /etc/systemd/system/vpn-agent.service
 [Unit]

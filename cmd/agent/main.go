@@ -154,7 +154,7 @@ func buildEUConfigSafe(state State) {
 	warpKeys, err := os.ReadFile("/usr/local/etc/xray/warp_keys.txt")
 	if err == nil {
 		wParts := strings.Split(strings.TrimSpace(string(warpKeys)), "|")
-		if len(wParts) >= 2 {
+		if len(wParts) >= 2 && wParts[0] != "" && wParts[1] != "" {
 			warpOutbound = map[string]interface{}{
 				"protocol": "wireguard",
 				"tag":      "warp",
@@ -246,13 +246,13 @@ func buildRUConfigSafe(state State) {
 			"tag":      tagTCP,
 			"protocol": "vless",
 			"settings": map[string]interface{}{"vnext": []map[string]interface{}{{"address": ip, "port": 443, "users": []map[string]interface{}{{"id": state.BridgeUUID, "flow": "xtls-rprx-vision", "encryption": "none"}}}}},
-			"streamSettings": map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"serverName": nodeSNI, "publicKey": pub, "fingerprint": "chrome"}},
+			"streamSettings": map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"serverName": nodeSNI, "publicKey": pub, "fingerprint": "chrome", "shortId": xh_path}},
 		})
 		outbounds = append(outbounds, map[string]interface{}{
 			"tag":      tagXH,
 			"protocol": "vless",
 			"settings": map[string]interface{}{"vnext": []map[string]interface{}{{"address": ip, "port": 4433, "users": []map[string]interface{}{{"id": state.BridgeUUID, "encryption": "none"}}}}},
-			"streamSettings": map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": "/" + xh_path, "mode": "auto"}, "realitySettings": map[string]interface{}{"serverName": nodeSNI, "publicKey": pub, "fingerprint": "chrome"}},
+			"streamSettings": map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": "/" + xh_path, "mode": "auto"}, "realitySettings": map[string]interface{}{"serverName": nodeSNI, "publicKey": pub, "fingerprint": "chrome", "shortId": xh_path}},
 		})
 		outbounds = append(outbounds, map[string]interface{}{
 			"tag":      tagSS,
