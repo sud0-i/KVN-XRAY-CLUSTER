@@ -512,7 +512,7 @@ SVC
             else
                 KEYS=$(/usr/local/bin/xray x25519)
                 PK=$(echo "$KEYS" | grep -i "Private" | awk '{print $NF}')
-                PUB=$(echo "$KEYS" | grep -iE "Public" | awk '{print $NF}')
+                PUB=$(echo "$KEYS" | grep -iE "Public|Password" | head -n 1 | awk '{print $NF}')
                 SID=$(openssl rand -hex 4)
                 echo "$PK|$SID|none" > /usr/local/etc/xray/agent_keys.txt
                 curl -s -G -H "Authorization: Bearer $TOKEN" \
@@ -536,8 +536,8 @@ SVC
             
             KEYS=$(/usr/local/bin/xray x25519)
             PK=$(echo "$KEYS" | grep -i "Private" | awk '{print $NF}')
-            PUB=$(echo "$KEYS" | grep -iE "Public" | awk '{print $NF}')
-            SS_PASS=$(openssl rand -base64 16 | tr -d '+/=' | cut -c1-16)
+            PUB=$(echo "$KEYS" | grep -iE "Public|Password" | head -n 1 | awk '{print $NF}')
+            SS_PASS=$(openssl rand -base64 16)
             XP=$(openssl rand -hex 6)
             echo "$PK|$SS_PASS|$XP" > /usr/local/etc/xray/agent_keys.txt
             

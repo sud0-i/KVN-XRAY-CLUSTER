@@ -225,8 +225,8 @@ func buildRUConfigSafe(state State) {
 		}
 	}
 
-	var clients []map[string]interface{}
-	var xhClients []map[string]interface{}
+	clients := []map[string]interface{}{}
+    xhClients := []map[string]interface{}{}
 	for _, u := range state.Users {
 		clients = append(clients, map[string]interface{}{"id": u["uuid"], "email": u["email"], "flow": "xtls-rprx-vision"})
 		xhClients = append(xhClients, map[string]interface{}{"id": u["uuid"], "email": u["email"]})
