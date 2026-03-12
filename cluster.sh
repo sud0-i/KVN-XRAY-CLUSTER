@@ -296,14 +296,7 @@ manage_users_cli() {
                 echo "1) Лимит 5 IP (По умолчанию)"
                 echo "2) Безлимитный аккаунт"
                 read -p "Тип аккаунта: " L_TYPE
-                LIMIT=5
-                if [ "$L_TYPE" == "2" ]; then
-                    LIMIT=0
-                    sqlite3 /etc/orchestrator/core.db "INSERT INTO users (uuid, name, expires_at, ip_limit) VALUES ('$U_UUID', '$U_NAME', NULL, $LIMIT);"
-                else
-                    LIMIT=5
-                    sqlite3 /etc/orchestrator/core.db "INSERT INTO users (uuid, name, expires_at, ip_limit) VALUES ('$U_UUID', '$U_NAME', datetime('now', '+30 days'), $LIMIT);"
-                fi
+                
                 U_UUID=$(uuidgen)
                 if [ "$L_TYPE" == "2" ]; then
                     LIMIT=0
@@ -312,6 +305,7 @@ manage_users_cli() {
                     LIMIT=5
                     sqlite3 /etc/orchestrator/core.db "INSERT INTO users (uuid, name, expires_at, ip_limit) VALUES ('$U_UUID', '$U_NAME', datetime('now', '+30 days'), $LIMIT);"
                 fi
+                
                 DOMAIN=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
                 echo "✅ Пользователь добавлен в БД!"
                 echo "🔗 Ссылка: https://$DOMAIN/sub/$U_UUID.html"

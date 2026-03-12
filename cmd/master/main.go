@@ -274,24 +274,24 @@ func handleSub(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func monitorNodes(bot *tgbotapi.BotAPI) {
-	for {
-		time.Sleep(2 * time.Minute)
-		rows, err := db.Query("SELECT ip FROM bridges WHERE ip != '127.0.0.1' AND last_seen < datetime('now', '-3 minute') UNION SELECT ip FROM exits WHERE ip != '127.0.0.1' AND last_seen < datetime('now', '-3 minute')")
-		if err != nil {
-			log.Println("Node monitor DB error:", err)
-			continue
-		}
-
-		for rows.Next() {
-			var ip string
-			rows.Scan(&ip)
-			msg := tgbotapi.NewMessageToChannel(cfg.ChatID, fmt.Sprintf("🔴 АЛЕРТ! Узел %s не выходит на связь более 3 минут.", ip))
-			bot.Send(msg)
-		}
-		rows.Close()
-	}
-}
+//func monitorNodes(bot *tgbotapi.BotAPI) {
+//	for {
+//		time.Sleep(2 * time.Minute)
+//		rows, err := db.Query("SELECT ip FROM bridges WHERE ip != '127.0.0.1' AND last_seen < datetime('now', '-3 minute') UNION SELECT ip FROM exits WHERE ip != '127.0.0.1' AND last_seen < datetime('now', '-3 minute')")
+//		if err != nil {
+//			log.Println("Node monitor DB error:", err)
+//			continue
+//		}
+//
+//		for rows.Next() {
+//			var ip string
+//			rows.Scan(&ip)
+//			msg := tgbotapi.NewMessageToChannel(cfg.ChatID, fmt.Sprintf("🔴 АЛЕРТ! Узел %s не выходит на связь более 3 минут.", ip))
+//			bot.Send(msg)
+//		}
+//		rows.Close()
+//	}
+//}
 
 func main() {
 	loadConfig()
@@ -318,7 +318,7 @@ func main() {
 			select {}
 		}
 
-		go monitorNodes(bot)
+		//go monitorNodes(bot)
 
 		u := tgbotapi.NewUpdate(0)
 		u.Timeout = 60

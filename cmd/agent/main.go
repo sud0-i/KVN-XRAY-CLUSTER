@@ -143,8 +143,8 @@ func buildEUConfigSafe(state State) {
 
 	var parsedWarpDomains []string
 	for _, d := range strings.Split(state.WarpDomains, ",") {
-		cleaned := strings.TrimSpace(d)
-		cleaned = strings.Trim(cleaned, `"`)
+		cleaned := strings.TrimSpace(d)       // Убираем пробелы
+		cleaned = strings.Trim(cleaned, `"`)  // Убираем кавычки
 		if cleaned != "" {
 			parsedWarpDomains = append(parsedWarpDomains, cleaned)
 		}
