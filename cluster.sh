@@ -128,12 +128,17 @@ restore_backup() {
     MY_IP=$(curl -s4 ifconfig.me)
     sed -i "s/MASTER_IP=\".*\"/MASTER_IP=\"$MY_IP\"/" /etc/orchestrator/config.env
     
-    echo "⏳ 4/6 Загрузка и настройка ядра Master API..."
-    if [ ! -f /usr/local/bin/vpn-master ]; then
-        curl -sSL -f "https://github.com/${REPO_URL}/releases/latest/download/vpn-master" -o /usr/local/bin/vpn-master
-        chmod +x /usr/local/bin/vpn-master
+    echo "⏳ 4/6 Загрузка бинарников ядра и агента..."
+    # Качаем Мастера
+    curl -sSL -f "https://github.com/${REPO_URL}/releases/latest/download/vpn-master" -o /usr/local/bin/vpn-master
+    chmod +x /usr/local/bin/vpn-master
+    
+    # Качаем Агента для будущих нод
+    mkdir -p /etc/orchestrator/bin
+    curl -sSL -f "https://github.com/${REPO_URL}/releases/latest/download/vpn-agent" -o /etc/orchestrator/bin/agent
+    chmod +x /etc/orchestrator/bin/agent
         
-        cat <<EOF > /etc/systemd/system/vpn-master.service
+    cat <<EOF > /etc/systemd/system/vpn-master.service
 [Unit]
 Description=VPN Master API
 After=network.target
@@ -146,7 +151,7 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload
+    systemctl daemon-reload
     fi
     
     OLD_DOMAIN=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
