@@ -98,29 +98,56 @@ create_backup() {
 }
 
 restore_backup() {
-    echo -e "\n♻️ ВОССТАНОВЛЕНИЕ ИЗ БЕКАПА"
-    read -p "Укажи полный путь к файлу (например, /root/cluster_backup.enc): " B_FILE
+    echo -e "\n♻️ ПОЛНОЕ ВОССТАНОВЛЕНИЕ КЛАСТЕРА ИЗ БЕКАПА"
+    read -p "Укажи путь к зашифрованному архиву (например, /root/cluster_backup.enc): " B_FILE
     if [ ! -f "$B_FILE" ]; then echo "❌ Файл не найден!"; return; fi
     
     read -s -p "🔐 Введи пароль от архива: " B_PASS; echo ""
     
-    echo "⏳ Расшифровка..."
+    echo "⏳ 1/6 Установка базовых зависимостей..."
+    install_deps
+    
+    echo "⏳ 2/6 Расшифровка архива..."
     if ! openssl enc -aes-256-cbc -pbkdf2 -d -in "$B_FILE" -out /tmp/restored.tar.gz -pass pass:"$B_PASS" 2>/dev/null; then
         echo "❌ Ошибка расшифровки! Неверный пароль или поврежден файл."
         return
     fi
     
-    echo "⏳ Остановка служб и распаковка..."
+    echo "⏳ 3/6 Остановка служб и распаковка..."
     systemctl stop vpn-master vpn-agent nginx xray 2>/dev/null
     
-    # Распаковываем поверх текущей системы
     tar -xzf /tmp/restored.tar.gz -C /
     mkdir -p /etc/orchestrator
     mv /tmp/core_backup.db /etc/orchestrator/core.db
     rm -f /tmp/restored.tar.gz
     
-    # Исправляем права на ключи
+    # Исправляем права на SSH-ключи
     chmod 600 /root/.ssh/vpn_cluster_key 2>/dev/null
+    
+    # Обновляем IP-адрес Мастера в конфиге на новый
+    MY_IP=$(curl -s4 ifconfig.me)
+    sed -i "s/MASTER_IP=\".*\"/MASTER_IP=\"$MY_IP\"/" /etc/orchestrator/config.env
+    
+    echo "⏳ 4/6 Загрузка и настройка ядра Master API..."
+    if [ ! -f /usr/local/bin/vpn-master ]; then
+        curl -sSL -f "https://github.com/${REPO_URL}/releases/latest/download/vpn-master" -o /usr/local/bin/vpn-master
+        chmod +x /usr/local/bin/vpn-master
+        
+        cat <<EOF > /etc/systemd/system/vpn-master.service
+[Unit]
+Description=VPN Master API
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/vpn-master
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+    fi
     
     OLD_DOMAIN=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
     echo "---------------------------------------------------------"
@@ -130,33 +157,41 @@ restore_backup() {
     echo "---------------------------------------------------------"
     read -p "Твой выбор (1-2): " D_CHOICE
     
+    echo "⏳ 5/6 Настройка сети и доменов..."
     if [ "$D_CHOICE" == "2" ]; then
         read -p "Введи НОВЫЙ домен (напр. new.sudoi.ru): " NEW_DOMAIN
         read -p "Email для SSL (Let's Encrypt): " SSL_EMAIL
         
-        echo "⏳ Перевыпуск SSL сертификата..."
         certbot certonly --standalone -d "$NEW_DOMAIN" -m "$SSL_EMAIL" --agree-tos -n
         
-        echo "⏳ Обновление БД и конфигов Мастера..."
         sed -i "s/SUB_DOMAIN=\"$OLD_DOMAIN\"/SUB_DOMAIN=\"$NEW_DOMAIN\"/" /etc/orchestrator/config.env
         sed -i "s/$OLD_DOMAIN/$NEW_DOMAIN/g" /etc/nginx/sites-available/default
         sqlite3 /etc/orchestrator/core.db "UPDATE bridges SET domain='$NEW_DOMAIN' WHERE domain='$OLD_DOMAIN';"
         
-        echo "⏳ Переключение удаленных нод на новый домен Мастера..."
+        echo "⏳ Переключение удаленных нод на новый домен..."
         for IP in $(sqlite3 /etc/orchestrator/core.db "SELECT ip FROM bridges WHERE ip != '127.0.0.1' UNION SELECT ip FROM exits;"); do
             ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP "sed -i 's/$OLD_DOMAIN/$NEW_DOMAIN/g' /etc/systemd/system/vpn-agent.service && systemctl daemon-reload && systemctl restart vpn-agent" 2>/dev/null
             echo "   ✅ Нода $IP переключена."
         done
     fi
     
-    echo "⏳ Запуск служб..."
-    systemctl start nginx vpn-master vpn-agent xray 2>/dev/null
+    # Включаем Nginx
+    [ ! -f /etc/nginx/sites-enabled/default ] && ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/ 2>/dev/null
     
-    echo "🎉 ВОССТАНОВЛЕНИЕ УСПЕШНО ЗАВЕРШЕНО!"
-    if [ "$D_CHOICE" == "2" ]; then
-        echo "⚠️ Убедись, что направил DNS нового домена ($NEW_DOMAIN) на этот сервер!"
-        echo "👉 Ссылки всех пользователей автоматически обновились."
+    echo "⏳ 6/6 Запуск ядра кластера..."
+    systemctl restart nginx vpn-master 2>/dev/null
+    
+    echo "🎉 МАСТЕР УСПЕШНО ВОССТАНОВЛЕН!"
+    
+    # Если на сервере еще нет локального моста, предлагаем его поставить
+    if [ ! -f /usr/local/bin/vpn-agent ]; then
+        echo "---------------------------------------------------------"
+        read -p "🚀 Установить Локальный RU-Мост на этот сервер прямо сейчас? (y/n): " INST_LOCAL
+        if [ "$INST_LOCAL" == "y" ]; then
+            deploy_node "ru_local"
+        fi
     fi
+    
     read -n 1 -s -r -p "Нажми любую клавишу..."
 }
 
@@ -676,6 +711,7 @@ while true; do
     
     if [ ! -f /usr/local/bin/vpn-master ]; then
         echo "1. 🛠 Установить Master API"
+        echo "13. ♻️ Восстановить из бекапа"
     else
         echo "🔹 ИНФРАСТРУКТУРА"
         echo "2. 🏠 Добавить Локальный RU-Мост"
