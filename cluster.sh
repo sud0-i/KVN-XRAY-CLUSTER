@@ -71,15 +71,92 @@ harden_system() {
 }
 
 create_backup() {
+    echo -e "\n📦 СОЗДАНИЕ ЗАШИФРОВАННОГО БЕКАПА"
     TG_TOKEN=$(grep TG_TOKEN /etc/orchestrator/config.env 2>/dev/null | cut -d'"' -f2)
     TG_CHAT_ID=$(grep TG_CHAT_ID /etc/orchestrator/config.env 2>/dev/null | cut -d'"' -f2)
     if [ -z "$TG_TOKEN" ]; then echo "❌ Токен не найден. Сначала установи Мастер."; return; fi
-    echo "⏳ Создание бекапа..."
+    
+    read -s -p "🔐 Придумай пароль для шифрования архива: " B_PASS1; echo ""
+    read -s -p "🔁 Повтори пароль: " B_PASS2; echo ""
+    if [ "$B_PASS1" != "$B_PASS2" ]; then echo "❌ Пароли не совпадают!"; return; fi
+    
+    echo "⏳ Сбор файлов и шифрование..."
     sqlite3 /etc/orchestrator/core.db ".backup '/tmp/core_backup.db'"
-    tar -czf /tmp/backup.tar.gz -C /tmp core_backup.db
-    curl -s -F document=@"/tmp/backup.tar.gz" -F chat_id="$TG_CHAT_ID" -F caption="📦 Бекап БД Кластера v17.0 Final" "https://api.telegram.org/bot$TG_TOKEN/sendDocument" >/dev/null
-    rm -f /tmp/core_backup.db /tmp/backup.tar.gz
-    echo "✅ Бекап отправлен в Telegram!"
+    
+    # Упаковываем базу, конфиг кластера, SSH-ключи и конфиги Nginx
+    tar -czf /tmp/backup.tar.gz -C / tmp/core_backup.db etc/orchestrator/config.env root/.ssh/vpn_cluster_key root/.ssh/vpn_cluster_key.pub etc/letsencrypt etc/nginx/sites-available/default 2>/dev/null
+    
+    # Шифруем (AES-256-CBC)
+    openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/backup.tar.gz -out /tmp/cluster_backup.enc -pass pass:"$B_PASS1" 2>/dev/null
+    
+    echo "⏳ Отправка в Telegram..."
+    curl -s -F document=@"/tmp/cluster_backup.enc" -F chat_id="$TG_CHAT_ID" -F caption="📦 Зашифрованный бекап кластера (AES-256)" "https://api.telegram.org/bot$TG_TOKEN/sendDocument" >/dev/null
+    
+    rm -f /tmp/core_backup.db /tmp/backup.tar.gz /tmp/cluster_backup.enc
+    echo "✅ Бекап успешно отправлен в Telegram!"
+    read -n 1 -s -r -p "Нажми любую клавишу..."
+}
+
+restore_backup() {
+    echo -e "\n♻️ ВОССТАНОВЛЕНИЕ ИЗ БЕКАПА"
+    read -p "Укажи полный путь к файлу (например, /root/cluster_backup.enc): " B_FILE
+    if [ ! -f "$B_FILE" ]; then echo "❌ Файл не найден!"; return; fi
+    
+    read -s -p "🔐 Введи пароль от архива: " B_PASS; echo ""
+    
+    echo "⏳ Расшифровка..."
+    if ! openssl enc -aes-256-cbc -pbkdf2 -d -in "$B_FILE" -out /tmp/restored.tar.gz -pass pass:"$B_PASS" 2>/dev/null; then
+        echo "❌ Ошибка расшифровки! Неверный пароль или поврежден файл."
+        return
+    fi
+    
+    echo "⏳ Остановка служб и распаковка..."
+    systemctl stop vpn-master vpn-agent nginx xray 2>/dev/null
+    
+    # Распаковываем поверх текущей системы
+    tar -xzf /tmp/restored.tar.gz -C /
+    mkdir -p /etc/orchestrator
+    mv /tmp/core_backup.db /etc/orchestrator/core.db
+    rm -f /tmp/restored.tar.gz
+    
+    # Исправляем права на ключи
+    chmod 600 /root/.ssh/vpn_cluster_key 2>/dev/null
+    
+    OLD_DOMAIN=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
+    echo "---------------------------------------------------------"
+    echo "📂 В бекапе найден домен управления: $OLD_DOMAIN"
+    echo "1) ✅ Оставить этот домен (восстановить как было)"
+    echo "2) 🔄 ПЕРЕЕХАТЬ НА НОВЫЙ ДОМЕН (если старый забанен)"
+    echo "---------------------------------------------------------"
+    read -p "Твой выбор (1-2): " D_CHOICE
+    
+    if [ "$D_CHOICE" == "2" ]; then
+        read -p "Введи НОВЫЙ домен (напр. new.sudoi.ru): " NEW_DOMAIN
+        read -p "Email для SSL (Let's Encrypt): " SSL_EMAIL
+        
+        echo "⏳ Перевыпуск SSL сертификата..."
+        certbot certonly --standalone -d "$NEW_DOMAIN" -m "$SSL_EMAIL" --agree-tos -n
+        
+        echo "⏳ Обновление БД и конфигов Мастера..."
+        sed -i "s/SUB_DOMAIN=\"$OLD_DOMAIN\"/SUB_DOMAIN=\"$NEW_DOMAIN\"/" /etc/orchestrator/config.env
+        sed -i "s/$OLD_DOMAIN/$NEW_DOMAIN/g" /etc/nginx/sites-available/default
+        sqlite3 /etc/orchestrator/core.db "UPDATE bridges SET domain='$NEW_DOMAIN' WHERE domain='$OLD_DOMAIN';"
+        
+        echo "⏳ Переключение удаленных нод на новый домен Мастера..."
+        for IP in $(sqlite3 /etc/orchestrator/core.db "SELECT ip FROM bridges WHERE ip != '127.0.0.1' UNION SELECT ip FROM exits;"); do
+            ssh -i /root/.ssh/vpn_cluster_key -o StrictHostKeyChecking=no root@$IP "sed -i 's/$OLD_DOMAIN/$NEW_DOMAIN/g' /etc/systemd/system/vpn-agent.service && systemctl daemon-reload && systemctl restart vpn-agent" 2>/dev/null
+            echo "   ✅ Нода $IP переключена."
+        done
+    fi
+    
+    echo "⏳ Запуск служб..."
+    systemctl start nginx vpn-master vpn-agent xray 2>/dev/null
+    
+    echo "🎉 ВОССТАНОВЛЕНИЕ УСПЕШНО ЗАВЕРШЕНО!"
+    if [ "$D_CHOICE" == "2" ]; then
+        echo "⚠️ Убедись, что направил DNS нового домена ($NEW_DOMAIN) на этот сервер!"
+        echo "👉 Ссылки всех пользователей автоматически обновились."
+    fi
     read -n 1 -s -r -p "Нажми любую клавишу..."
 }
 
@@ -616,11 +693,12 @@ while true; do
         echo "10. ✈️ Telegram MTProto Прокси"
         echo "11. 🔔 Включить SSH-алерты в Telegram"
         echo "12. 📦 Сделать полный бекап в Telegram"
-        echo "13. 🔄 Обновить Мастера и Агентов"
-        echo "14. 🔄 Обновить Ядро Xray"
-        echo "15. 🎭 Сменить SNI"
-        echo "16. 🚀 Сменить домены WARP"
-        echo "17. ⚙️ Автозапуск меню при входе"
+        echo "13. ♻️ Восстановить из бекапа"
+        echo "14. 🔄 Обновить Мастера и Агентов"
+        echo "15. 🔄 Обновить Ядро Xray"
+        echo "16. 🎭 Сменить SNI"
+        echo "17. 🚀 Сменить домены WARP"
+        echo "18. ⚙️ Автозапуск меню при входе"
     fi
     echo "0. 🚪 Выход"
     echo "#########################################################"
@@ -638,11 +716,12 @@ while true; do
         10) manage_mtproto ;;
         11) setup_ssh_notify ;;
         12) create_backup ;;
-        13) update_cluster ;;
-        14) update_xray_core ;;
-        15) change_sni_cli ;;
-        16) manage_warp_cli ;;
-        17) toggle_autostart ;;
+        13) restore_backup ;;
+        14) update_cluster ;;
+        15) update_xray_core ;;
+        16) change_sni_cli ;;
+        17) manage_warp_cli ;;
+        18) toggle_autostart ;;
         0) exit 0 ;;
     esac
 done
