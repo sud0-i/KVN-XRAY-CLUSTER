@@ -1,9 +1,8 @@
 #!/bin/bash
 # ==============================================================================
-# 🚀 VPN CLOUD NATIVE v17.0 FINAL (GitHub Release Edition)
+# 🚀 KVN Cluster v1.1.6
 # ==============================================================================
 
-# ⚠️ УБЕДИСЬ, ЧТО ЗДЕСЬ УКАЗАН ТВОЙ РЕПОЗИТОРИЙ GITHUB:
 REPO_URL="sud0-i/KVN-XRAY-CLUSTER"
 
 export DEBIAN_FRONTEND=noninteractive
