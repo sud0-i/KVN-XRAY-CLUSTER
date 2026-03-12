@@ -82,10 +82,10 @@ create_backup() {
     echo "⏳ Сбор файлов и шифрование..."
     sqlite3 /etc/orchestrator/core.db ".backup '/tmp/core_backup.db'"
     
-    # Упаковываем базу, конфиг кластера, SSH-ключи и конфиги Nginx
+    
     tar -czf /tmp/backup.tar.gz -C / tmp/core_backup.db etc/orchestrator/config.env root/.ssh/vpn_cluster_key root/.ssh/vpn_cluster_key.pub etc/letsencrypt etc/nginx/sites-available/default 2>/dev/null
     
-    # Шифруем (AES-256-CBC)
+
     openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/backup.tar.gz -out /tmp/cluster_backup.enc -pass pass:"$B_PASS1" 2>/dev/null
     
     echo "⏳ Отправка в Telegram..."

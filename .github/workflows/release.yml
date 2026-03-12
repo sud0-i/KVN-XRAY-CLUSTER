@@ -3,9 +3,9 @@ name: Build and Release VPN Cluster
 on:
   push:
     tags:
-      - 'v*' # Запускать сборку только при создании тегов
+      - 'v*'
 
-# ДАЕМ ПРАВА НА СОЗДАНИЕ РЕЛИЗОВ И ЗАГРУЗКУ ФАЙЛОВ
+
 permissions:
   contents: write
 
@@ -19,8 +19,8 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.25.x' # Совпадает с твоим go.mod
-        cache: true          # Включаем кэш для быстроты сборки
+        go-version: '1.25.x' 
+        cache: true          
 
     - name: Download dependencies
       run: go mod download
