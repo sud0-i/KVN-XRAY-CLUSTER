@@ -152,7 +152,6 @@ User=root
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    fi
     
     OLD_DOMAIN=$(grep SUB_DOMAIN /etc/orchestrator/config.env | cut -d'"' -f2)
     echo "---------------------------------------------------------"
