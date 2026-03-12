@@ -120,6 +120,9 @@ restore_backup() {
     mkdir -p /etc/orchestrator
     mv /tmp/core_backup.db /etc/orchestrator/core.db
     rm -f /tmp/restored.tar.gz
+
+    mkdir -p /var/log/xray
+    chown -R nobody:nogroup /var/log/xray
     
     # Исправляем права на SSH-ключи
     chmod 600 /root/.ssh/vpn_cluster_key 2>/dev/null
