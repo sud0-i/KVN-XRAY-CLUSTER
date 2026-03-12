@@ -265,7 +265,60 @@ func handleSub(w http.ResponseWriter, r *http.Request) {
 
 	if isHTML {
 		u := "https://" + cfg.Domain + "/sub/" + uuid
-		h := fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>VPN Setup</title><script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script><style>body{background:#121212;color:#e0e0e0;font-family:sans-serif;text-align:center;padding:20px}.card{background:#1e1e1e;padding:30px;border-radius:16px;max-width:400px;margin:auto}.btn{display:block;padding:14px;margin-bottom:12px;border-radius:12px;text-decoration:none;font-weight:bold}.btn-ios{background:#007AFF;color:#fff}.btn-android{background:#3DDC84;color:#000}#qr{margin:20px auto;background:#fff;padding:10px;border-radius:8px;display:inline-block}.raw-link{background:#111;padding:10px;border-radius:8px;font-family:monospace;font-size:12px;word-break:break-all}</style></head><body><div class="card"><h2>Привет, %s!</h2><div id="qr"></div><a href="v2raytun://import/%s" class="btn btn-ios">🍏 Подключить iOS / Mac</a><a href="hiddify://install-config?url=%s" class="btn btn-android">🤖 Подключить Android</a><p>Прямая ссылка:</p><div class="raw-link">%s</div></div><script>new QRCode(document.getElementById("qr"), "%s");</script></body></html>`, name, u, u, u, u)
+		
+		// Обрати внимание: все символы % в CSS (например, width: 100%) удвоены до %%, 
+		// чтобы компилятор Go не воспринял их как переменные!
+		htmlTemplate := `<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Настройка VPN</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        body { background: #121212; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; min-height: 100vh; margin: 0; padding: 20px; text-align: center; }
+        .card { background: #1e1e1e; padding: 30px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); max-width: 400px; width: 100%%; box-sizing: border-box; }
+        h2 { font-size: 24px; margin-top: 0; margin-bottom: 20px; color: #ffffff; }
+        .step-title { font-weight: bold; color: #888; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; display: block; text-align: left; }
+        .apps { background: #2a2a2a; padding: 15px; border-radius: 12px; margin-bottom: 25px; text-align: left; font-size: 14px; border: 1px solid #333; }
+        .apps a { color: #4da6ff; text-decoration: none; display: block; margin-bottom: 10px; font-weight: 500; }
+        .apps a:last-child { margin-bottom: 0; }
+        .apps a:hover { text-decoration: underline; }
+        .btn { display: block; width: 100%%; padding: 14px; margin-bottom: 12px; border-radius: 12px; text-decoration: none; font-weight: bold; font-size: 15px; box-sizing: border-box; transition: transform 0.1s; border: none; cursor: pointer; }
+        .btn:active { transform: scale(0.98); }
+        .btn-ios { background: #007AFF; color: white; }
+        .btn-android { background: #3DDC84; color: #000; }
+        .btn-win { background: #00A4EF; color: white; }
+        #qr { margin: 10px auto 20px; background: #fff; padding: 15px; border-radius: 12px; display: inline-block; }
+        .raw-link { background: #111; padding: 15px; border-radius: 12px; font-family: monospace; font-size: 12px; color: #4da6ff; word-break: break-all; margin-top: 5px; cursor: pointer; border: 1px solid #333; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🔑 Привет, %s!</h2>
+        
+        <div class="apps">
+            <span class="step-title">Шаг 1. Установи клиент:</span>
+            <a href="https://apps.apple.com/us/app/v2raytun/id6476628951">🍏 iOS / macOS — V2rayTun</a>
+            <a href="https://play.google.com/store/apps/details?id=com.v2raytun.android">🤖 Android — V2rayTun</a>
+            <a href="https://github.com/hiddify/hiddify-next/releases/latest">💻 Windows / Linux — Hiddify Next</a>
+        </div>
+
+        <span class="step-title" style="text-align: center;">Шаг 2. Подключи профиль:</span>
+        <a href="v2raytun://import/%s" class="btn btn-ios">🚀 Подключить в V2rayTun</a>
+        <a href="hiddify://install-config?url=%s" class="btn btn-android">🤖 Подключить в Hiddify</a>
+        <a href="v2box://install-sub?url=%s" class="btn btn-win">📦 Подключить в V2Box</a>
+
+        <div id="qr"></div>
+
+        <span class="step-title" style="text-align: center;">Для ручной настройки (нажми, чтобы скопировать):</span>
+        <div class="raw-link" onclick="navigator.clipboard.writeText(this.innerText); alert('Ссылка скопирована!');">%s</div>
+    </div>
+    <script>new QRCode(document.getElementById("qr"), {text: "%s", width: 160, height: 160, colorDark : "#000000", colorLight : "#ffffff", correctLevel : QRCode.CorrectLevel.L});</script>
+</body>
+</html>`
+
+		h := fmt.Sprintf(htmlTemplate, name, u, u, u, u, u)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(h))
 	} else {
