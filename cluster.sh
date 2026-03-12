@@ -121,13 +121,6 @@ restore_backup() {
     mv /tmp/core_backup.db /etc/orchestrator/core.db
     rm -f /tmp/restored.tar.gz
     
-    # === ФИКС ДЛЯ XRAY (чтобы не было ошибок permission denied при восстановлении) ===
-    mkdir -p /var/log/xray
-    chown -R root:root /var/log/xray
-    sed -i 's/User=nobody/User=root/g' /etc/systemd/system/xray.service 2>/dev/null
-    systemctl daemon-reload
-    # ==============================================================================
-    
     # Исправляем права на SSH-ключи
     chmod 600 /root/.ssh/vpn_cluster_key 2>/dev/null
     
