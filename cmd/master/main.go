@@ -242,6 +242,12 @@ func handleSub(w http.ResponseWriter, r *http.Request) {
 
 	var sni string
 	db.QueryRowContext(r.Context(), "SELECT val FROM settings WHERE key='sni'").Scan(&sni)
+	
+	var ruSNI string
+	err := db.QueryRowContext(r.Context(), "SELECT val FROM settings WHERE key='ru_sni'").Scan(&ruSNI)
+	if err != nil || ruSNI == "" {
+		ruSNI = sni
+	}
 
 	var links []string
 	bRows, err := db.QueryContext(r.Context(), "SELECT ip, domain, pub_key, sid, mode FROM bridges")
@@ -261,8 +267,9 @@ func handleSub(w http.ResponseWriter, r *http.Request) {
 			if dIP == cfg.MasterIP || dIP == "127.0.0.1" {
 				port = "4433"
 			}
-			links = append(links, fmt.Sprintf("vless://%s@%s:%s?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=%s#%s-[TCP-%s]", uuid, dIP, port, pk, sid, sni, name, d))
-			links = append(links, fmt.Sprintf("vless://%s@%s:%s?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%%2Fxtcp&sni=%s#%s-[xHTTP-%s]", uuid, dIP, port, pk, sid, sni, name, d))
+			links = append(links, fmt.Sprintf("vless://%s@%s:%s?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=%s#%s-[TCP-%s]", uuid, dIP, port, pk, sid, ruSNI, name, d))
+			
+			links = append(links, fmt.Sprintf("vless://%s@%s:%s?security=reality&encryption=none&pbk=%s&sid=%s&fp=chrome&type=xhttp&path=%%2F&sni=%s#%s-[xHTTP-%s]", uuid, dIP, port, pk, sid, ruSNI, name, d))
 		}
 	}
 
