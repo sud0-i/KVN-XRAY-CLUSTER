@@ -205,16 +205,43 @@ delete_node() {
     echo "2) Удалить EU Ноду"
     echo "0) Отмена"
     read -p "Выбор: " DEL_C
+
     if [ "$DEL_C" == "1" ]; then
-        sqlite3 /etc/orchestrator/core.db "SELECT ip, domain, mode FROM bridges"
-        read -p "Введи IP моста: " DEL_IP
-        sqlite3 /etc/orchestrator/core.db "DELETE FROM bridges WHERE ip='$DEL_IP'"
-        echo "✅ Мост удален из БД."
+        echo "---------------------------------------------------------"
+        echo "📋 Список активных RU Мостов:"
+        local BRIDGES=$(sqlite3 /etc/orchestrator/core.db "SELECT ip, domain, mode FROM bridges;")
+        
+        if [ -z "$BRIDGES" ]; then
+            echo "❌ Нет активных мостов."
+        else
+            echo "$BRIDGES" | awk -F'|' '{
+                ip=$1; if(ip=="127.0.0.1") ip="127.0.0.1 (Локальный)"
+                printf "🇷🇺 IP: %-23s | Домен: %-20s | Режим: %s\n", ip, $2, $3
+            }'
+            echo "---------------------------------------------------------"
+            read -p "Введи IP моста для удаления (или 0 для отмены): " DEL_IP
+            if [ "$DEL_IP" != "0" ] && [ -n "$DEL_IP" ]; then
+                sqlite3 /etc/orchestrator/core.db "DELETE FROM bridges WHERE ip='$DEL_IP';"
+                echo "✅ Мост $DEL_IP успешно удален из БД."
+            fi
+        fi
+
     elif [ "$DEL_C" == "2" ]; then
-        sqlite3 /etc/orchestrator/core.db "SELECT ip FROM exits"
-        read -p "Введи IP ноды: " DEL_IP
-        sqlite3 /etc/orchestrator/core.db "DELETE FROM exits WHERE ip='$DEL_IP'"
-        echo "✅ EU нода удалена из БД."
+        echo "---------------------------------------------------------"
+        echo "📋 Список активных EU Нод:"
+        local EXITS=$(sqlite3 /etc/orchestrator/core.db "SELECT ip, sni FROM exits;")
+        
+        if [ -z "$EXITS" ]; then
+            echo "❌ Нет активных EU нод."
+        else
+            echo "$EXITS" | awk -F'|' '{printf "🇪🇺 IP: %-15s | SNI: %s\n", $1, $2}'
+            echo "---------------------------------------------------------"
+            read -p "Введи IP ноды для удаления (или 0 для отмены): " DEL_IP
+            if [ "$DEL_IP" != "0" ] && [ -n "$DEL_IP" ]; then
+                sqlite3 /etc/orchestrator/core.db "DELETE FROM exits WHERE ip='$DEL_IP';"
+                echo "✅ EU нода $DEL_IP успешно удалена из БД."
+            fi
+        fi
     fi
     read -n 1 -s -r -p "Нажми любую клавишу..."
 }
