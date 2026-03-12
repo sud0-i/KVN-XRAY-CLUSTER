@@ -273,8 +273,15 @@ func buildRUConfigSafe(state State) {
 
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag": "client-in", "port": 443, "protocol": "vless",
-			"settings": map[string]interface{}{"clients": clients, "decryption": "none", "fallbacks": []map[string]interface{}{{"dest": 80}}},
-			// --- ФИКС 2: Используем myRuSNI вместо state.SNI ---
+			"settings": map[string]interface{}{
+				"clients": clients, 
+				"decryption": "none", 
+				// --- ФИКС: Добавили перенаправление XHTTP (path: "/") на порт 8001 ---
+				"fallbacks": []map[string]interface{}{
+					{"path": "/", "dest": 8001, "xver": 0}, 
+					{"dest": 80},
+				},
+			},
 			"streamSettings": map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"show": false, "dest": fmt.Sprintf("%s:443", myRuSNI), "serverNames": []string{myRuSNI}, "privateKey": pk, "shortIds": []string{sid}}},
 		})
 		inbounds = append(inbounds, map[string]interface{}{
