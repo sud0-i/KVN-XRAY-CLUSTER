@@ -738,7 +738,7 @@ EOF
 while true; do
     clear
     echo "#########################################################"
-    echo "🚀 VPN CLOUD NATIVE v17.0 FINAL | Master Control Panel"
+    echo "🚀 KVN Cluster v1.1.6"
     echo "#########################################################"
     show_system_status
     
