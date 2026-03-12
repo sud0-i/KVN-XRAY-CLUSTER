@@ -61,6 +61,7 @@ func initDB() {
 
 	db.Exec(`UPDATE users SET expires_at=datetime('now', '+30 days') WHERE expires_at IS NULL`)
 	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('sni', 'www.microsoft.com')`)
+	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('ru_sni', 'dzen.ru')`)
 	db.Exec(`INSERT OR IGNORE INTO settings (key, val) VALUES ('warp_domains', '"geosite:google","geosite:openai","geosite:netflix","geosite:instagram","geosite:category-ru","domain:ru","domain:рф"')`)
 }
 
@@ -112,8 +113,9 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 	db.ExecContext(ctx, "UPDATE bridges SET last_seen=CURRENT_TIMESTAMP WHERE ip=?", nodeIP)
 	db.ExecContext(ctx, "UPDATE exits SET last_seen=CURRENT_TIMESTAMP WHERE ip=?", nodeIP)
 
-	var sni, warp string
+	var sni, ru_sni, warp string
 	db.QueryRowContext(ctx, "SELECT val FROM settings WHERE key='sni'").Scan(&sni)
+	db.QueryRowContext(ctx, "SELECT val FROM settings WHERE key='ru_sni'").Scan(&ru_sni)
 	db.QueryRowContext(ctx, "SELECT val FROM settings WHERE key='warp_domains'").Scan(&warp)
 
 	users := []map[string]interface{}{}
@@ -154,6 +156,7 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"bridge_uuid":  cfg.BridgeUUID,
 		"sni":          sni,
+		"ru_sni":       ru_sni,
 		"warp_domains": warp,
 		"users":        users,
 		"exits":        exits,

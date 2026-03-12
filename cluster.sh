@@ -320,8 +320,9 @@ manage_warp_cli() {
 
 change_sni_cli() {
     echo -e "\n🎭 СМЕНА SNI (Маскировки)"
-    echo "1) Изменить ГЛОБАЛЬНЫЙ SNI (по умолчанию)"
-    echo "2) Изменить SNI для КОНКРЕТНОЙ EU-ноды"
+    echo "1) Изменить ГЛОБАЛЬНЫЙ SNI (для EU-нод по умолчанию)"
+    echo "2) Изменить SNI для ВНУТРЕННИХ (RU) нод"
+    echo "3) Изменить SNI для КОНКРЕТНОЙ EU-ноды"
     read -p "Выбор: " SNI_OPT
 
     if [ "$SNI_OPT" == "1" ]; then
@@ -329,11 +330,17 @@ change_sni_cli() {
         sqlite3 /etc/orchestrator/core.db "UPDATE settings SET val='$NEW_SNI' WHERE key='sni';"
         echo "✅ Глобальный SNI обновлен!"
     elif [ "$SNI_OPT" == "2" ]; then
+        read -p "Новый RU SNI (напр. sberbank.ru): " NEW_RU_SNI
+        sqlite3 /etc/orchestrator/core.db "INSERT OR REPLACE INTO settings (key, val) VALUES ('ru_sni', '$NEW_RU_SNI');"
+        echo "✅ SNI для внутренних RU-нод обновлен!"
+    elif [ "$SNI_OPT" == "3" ]; then
         sqlite3 /etc/orchestrator/core.db "SELECT ip, sni FROM exits;" | awk -F'|' '{printf "🌍 IP: %-15s | Текущий кастомный SNI: %s\n", $1, $2}'
         read -p "Введи IP ноды: " NODE_IP
         read -p "Новый SNI для этой ноды: " NEW_SNI
         sqlite3 /etc/orchestrator/core.db "UPDATE exits SET sni='$NEW_SNI' WHERE ip='$NODE_IP';"
         echo "✅ SNI для $NODE_IP обновлен!"
+    else
+        echo "⚠️ Неверный выбор."
     fi
     read -n 1 -s -r -p "Нажми любую клавишу..."
 }

@@ -39,6 +39,7 @@ var (
 type State struct {
 	BridgeUUID  string                   `json:"bridge_uuid"`
 	SNI         string                   `json:"sni"`
+	RuSNI       string                   `json:"ru_sni"`
 	WarpDomains string                   `json:"warp_domains"`
 	Users       []map[string]interface{} `json:"users"`
 	Exits       []map[string]string      `json:"exits"`
@@ -264,15 +265,23 @@ func buildRUConfigSafe(state State) {
 			"streamSettings": map[string]interface{}{"network": "tcp", "security": "tls", "tlsSettings": map[string]interface{}{"alpn": []string{"http/1.1"}, "certificates": []map[string]interface{}{{"certificateFile": fmt.Sprintf("/etc/letsencrypt/live/%s/fullchain.pem", tlsDomain), "keyFile": fmt.Sprintf("/etc/letsencrypt/live/%s/privkey.pem", tlsDomain)}}}},
 		})
 	} else {
+		// --- ФИКС 1: Выбираем правильный SNI для РФ ---
+		myRuSNI := state.RuSNI
+		if myRuSNI == "" {
+			myRuSNI = state.SNI // Fallback, если Мастер старый и не прислал ru_sni
+		}
+
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag": "client-in", "port": 443, "protocol": "vless",
 			"settings": map[string]interface{}{"clients": clients, "decryption": "none", "fallbacks": []map[string]interface{}{{"dest": 80}}},
-			"streamSettings": map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"show": false, "dest": fmt.Sprintf("%s:443", state.SNI), "serverNames": []string{state.SNI}, "privateKey": pk, "shortIds": []string{sid}}},
+			// --- ФИКС 2: Используем myRuSNI вместо state.SNI ---
+			"streamSettings": map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"show": false, "dest": fmt.Sprintf("%s:443", myRuSNI), "serverNames": []string{myRuSNI}, "privateKey": pk, "shortIds": []string{sid}}},
 		})
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag": "client-xh", "port": 8001, "listen": "127.0.0.1", "protocol": "vless",
 			"settings": map[string]interface{}{"clients": xhClients, "decryption": "none"},
-			"streamSettings": map[string]interface{}{"network": "xhttp", "security": "none", "xhttpSettings": map[string]interface{}{"path": "/xtcp", "mode": "auto"}},
+			// --- ФИКС 3: Убираем жесткий путь "/xtcp" и ставим "/", чтобы XHTTP ловил всё ---
+			"streamSettings": map[string]interface{}{"network": "xhttp", "security": "none", "xhttpSettings": map[string]interface{}{"path": "/", "mode": "auto"}},
 		})
 	}
 
