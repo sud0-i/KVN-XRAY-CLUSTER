@@ -247,18 +247,23 @@ delete_node() {
 
 verify_dns_propagation() {
     local DOM_TO_CHECK=$1
-    local REAL_IP=$(curl -s4 ifconfig.me)
-    echo -e "\n🌍 Проверка DNS: привязка $DOM_TO_CHECK к $REAL_IP..."
+    local EXPECTED_IP=$2
+    
+    if [ -z "$EXPECTED_IP" ]; then
+        EXPECTED_IP=$(curl -s4 ifconfig.me)
+    fi
+    
+    echo -e "\n🌍 Проверка DNS: привязка $DOM_TO_CHECK к $EXPECTED_IP..."
     
     while true; do
         local RESOLVED_IP=$(dig +short "$DOM_TO_CHECK" | tail -n1)
-        if [ "$RESOLVED_IP" == "$REAL_IP" ]; then
-            echo "✅ Отлично! DNS-записи обновлены, домен указывает на этот сервер."
+        if [ "$RESOLVED_IP" == "$EXPECTED_IP" ]; then
+            echo "✅ Отлично! DNS-записи обновлены, домен указывает на правильный IP."
             return 0
         fi
         
         echo "⚠️ ВНИМАНИЕ: Домен $DOM_TO_CHECK сейчас указывает на IP: ${RESOLVED_IP:-"Нет записи (пусто)"}"
-        echo "👉 Зайди в панель регистратора домена и измени A-запись на: $REAL_IP"
+        echo "👉 Зайди в панель регистратора домена и измени A-запись на: $EXPECTED_IP"
         echo "---------------------------------------------------------"
         echo "1) 🔄 Проверить DNS еще раз (нажми после смены записи)"
         echo "2) ⏭️ Пропустить проверку (Например, если домен за Cloudflare Proxy)"
@@ -629,7 +634,7 @@ SVC
     if [ "$TYPE" == "ru_remote" ]; then
         echo "1) REALITY | 2) Classic TLS"
         read -p "Режим: " RU_MODE
-        [ "$RU_MODE" == "2" ] && { read -p "Домен: " DOMAIN; verify_dns_propagation "$DOMAIN"; read -p "Email: " EMAIL; } || read -p "Название домена: " DOMAIN
+        [ "$RU_MODE" == "2" ] && { read -p "Домен: " DOMAIN; verify_dns_propagation "$DOMAIN" "$IP"; read -p "Email: " EMAIL; } || read -p "Название домена: " DOMAIN
     fi
 
     export SSHPASS="$PASS"
@@ -649,17 +654,37 @@ SVC
         apt-get install -yq curl jq openssl ufw gnupg >/dev/null 2>&1
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
         
-        # Исправлено: принудительное создание папок
+        # --- ФИКС 1: Права Xray и очистка логов ---
+        sed -i 's/User=nobody/User=root/g' /etc/systemd/system/xray.service
         mkdir -p /usr/local/etc/xray /var/log/xray
-        chmod 777 /var/log/xray
-        
+        rm -f /var/log/xray/*.log
+        chown -R root:root /var/log/xray
+        systemctl daemon-reload
+        # ------------------------------------------
+
         ufw allow 22/tcp >/dev/null 2>&1
 
         if [ "$TYPE" == "ru_remote" ]; then
             if [ "$RU_MODE" == "2" ]; then
                 apt-get install -yq nginx certbot python3-certbot-nginx >/dev/null 2>&1
+                
+                # --- ФИКС 2: Освобождаем 80 порт перед Certbot ---
+                systemctl stop nginx 2>/dev/null 
                 certbot certonly --standalone -d $DOMAIN -m $EMAIL --agree-tos -n >/dev/null 2>&1
+                
+                # --- ФИКС 3: Создаем заглушку Nginx (Nextcloud) ---
+                cat << 'NGINX_EOF' > /etc/nginx/sites-available/default
+server { listen 80; server_name _; return 301 https://$host$request_uri; }
+server { listen 127.0.0.1:8081; root /var/www/html; index index.html; }
+NGINX_EOF
+                mkdir -p /var/www/html
+                cat << 'HTML_EOF' > /var/www/html/index.html
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Nextcloud</title><style>body{background-color:#0082c9;background-image:linear-gradient(40deg,#0082c9 0%,#004c8c 100%);font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}.form{background:#fff;padding:40px;border-radius:8px;width:300px;text-align:center;box-shadow:0 4px 10px rgba(0,0,0,0.1)}.form input{width:100%;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px;box-sizing:border-box}.form button{width:100%;padding:12px;background:#0082c9;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:bold;margin-top:10px}</style></head><body><div class="form"><h2 style="color:#333;margin-top:0">Nextcloud</h2><input type="text" placeholder="Username or email"><input type="password" placeholder="Password"><button>Log in</button></div></body></html>
+HTML_EOF
+                # --------------------------------------------------
+
                 systemctl restart nginx
+                
                 echo "tls|$DOMAIN|none" > /usr/local/etc/xray/agent_keys.txt
                 curl -s -H "Authorization: Bearer $TOKEN" "https://$MASTER_DOM/api/register?type=ru&ip=$(curl -s4 ifconfig.me)&domain=$DOMAIN&mode=tls" >/dev/null
             else
