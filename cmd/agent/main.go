@@ -294,7 +294,7 @@ func buildRUConfigSafe(state State) {
 
 	config := map[string]interface{}{
 		"log": map[string]interface{}{"loglevel": "warning", "access": "/var/log/xray/access.log"},
-		"api": map[string]interface{}{"tag": "api", "services": []string{"HandlerService", "StatsService", "ObservatoryService"}},
+		"api": map[string]interface{}{"tag": "api", "services": []string{"HandlerService", "StatsService", "ObservatoryService", "ReflectionService"}},
 		"stats": map[string]interface{}{},
 		"policy": map[string]interface{}{"levels": map[string]interface{}{"0": map[string]interface{}{"statsUserUplink": true, "statsUserDownlink": true}}},
 		"inbounds":  inbounds,
