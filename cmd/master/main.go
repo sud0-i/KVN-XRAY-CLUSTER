@@ -25,7 +25,7 @@ var cfg struct {
 
 func initDB() {
 	var err error
-	db, err = sql.Open("sqlite", "/etc/orchestrator/core.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	db, err = sql.Open("sqlite", "/etc/orchestrator/core.db?_busy_timeout=5000&_journal_mode=WAL")
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
